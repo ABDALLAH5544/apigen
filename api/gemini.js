@@ -11,25 +11,13 @@ const KEYS = [
 
 const COOLDOWN_HOURS = 25;
 
-const ALLOWED_ORIGINS = [
-  "https://azhart.vercel.app",
-  "https://azhart.netlify.app",
-  "https://azhrt.vercel.app",
-  "https://azhrt.netlify.app",
-  "https://ornate-florentine-7929cb.netlify.app"
-];
-
 export default async function handler(req, res) {
-  const origin = req.headers.origin;
-
-  if (ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "null");
-  }
+  // فتح CORS لأي موقع
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
+  // Preflight
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
@@ -98,5 +86,3 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "كل المفاتيح في فترة Cool-down" });
   }
 }
-
-
