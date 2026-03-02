@@ -16,7 +16,7 @@ const ALLOWED_ORIGINS = [
   "https://azhart.netlify.app",
   "https://azhrt.vercel.app",
   "https://azhrt.netlify.app",
-  "https://chat.z.ai/space/d17vc18s3hr0-art"
+  "https://ornate-florentine-7929cb.netlify.app"
 ];
 
 export default async function handler(req, res) {
@@ -98,4 +98,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "كل المفاتيح في فترة Cool-down" });
   }
 }
+
 
