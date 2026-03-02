@@ -11,8 +11,21 @@ const KEYS = [
 
 const COOLDOWN_HOURS = 25;
 
+const ALLOWED_ORIGINS = [
+  "https://azhart.vercel.app",
+  "https://azhart.netlify.app",
+  "https://azhrt.vercel.app",
+  "https://azhrt.netlify.app"
+];
+
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const origin = req.headers.origin;
+
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "null");
+  }
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
@@ -25,19 +38,16 @@ export default async function handler(req, res) {
   const now = Date.now();
   let selectedKey = null;
 
-  // اختار أول مفتاح مش في Cool-down
   for (let i = 0; i < KEYS.length; i++) {
     const key = KEYS[i];
-    const cooldownUntil = await kv.get(`gemini_key_cd_${i}`); // null أو timestamp
+    const cooldownUntil = await kv.get(`gemini_key_cd_${i}`);
     if (!cooldownUntil || now >= cooldownUntil) {
       selectedKey = { key, index: i };
       break;
     }
   }
 
-  if (!selectedKey) {
-    return res.status(500).json({ error: "كل المفاتيح في فترة Cool-down" });
-  }
+  if (!selectedKey) return res.status(500).json({ error: "كل المفاتيح في فترة Cool-down" });
 
   try {
     const ai = new GoogleGenAI({ apiKey: selectedKey.key });
@@ -54,12 +64,12 @@ export default async function handler(req, res) {
     res.status(200).json({ reply: text });
 
   } catch (error) {
-    console.log(`Key ${selectedKey.index + 1} exhausted. Moving to next.`);
+    console.log(`Key ${selectedKey.index + 1} exhausted. Moving to Cool-down.`);
+    await kv.set(
+      `gemini_key_cd_${selectedKey.index}`,
+      now + COOLDOWN_HOURS * 60 * 60 * 1000
+    );
 
-    // حط المفتاح في Cool-down 25 ساعة
-    await kv.set(`gemini_key_cd_${selectedKey.index}`, now + COOLDOWN_HOURS * 60 * 60 * 1000);
-
-    // جرب المفتاح التالي
     for (let j = 0; j < KEYS.length; j++) {
       if (j === selectedKey.index) continue;
       const nextKey = KEYS[j];
