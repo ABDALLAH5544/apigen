@@ -25,10 +25,11 @@ export default async function handler(req, res) {
   const now = Date.now();
   let selectedKey = null;
 
+  // اختار أول مفتاح مش في Cool-down
   for (let i = 0; i < KEYS.length; i++) {
     const key = KEYS[i];
-    const lastUsed = await kv.get(`gemini_key_${i}`); // اخر استخدام
-    if (!lastUsed || now - lastUsed >= COOLDOWN_HOURS * 60 * 60 * 1000) {
+    const cooldownUntil = await kv.get(`gemini_key_cd_${i}`); // null أو timestamp
+    if (!cooldownUntil || now >= cooldownUntil) {
       selectedKey = { key, index: i };
       break;
     }
@@ -39,7 +40,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // استخدم المفتاح المحدد
     const ai = new GoogleGenAI({ apiKey: selectedKey.key });
     const result = await ai.models.generateContent({
       model: "gemini-2.5-flash",
@@ -51,12 +51,39 @@ export default async function handler(req, res) {
       result?.text ||
       "No response";
 
-    // سجل آخر استخدام
-    await kv.set(`gemini_key_${selectedKey.index}`, now);
-
     res.status(200).json({ reply: text });
+
   } catch (error) {
-    console.error("Gemini API Error:", error.message);
-    res.status(500).json({ error: "API Error" });
+    console.log(`Key ${selectedKey.index + 1} exhausted. Moving to next.`);
+
+    // حط المفتاح في Cool-down 25 ساعة
+    await kv.set(`gemini_key_cd_${selectedKey.index}`, now + COOLDOWN_HOURS * 60 * 60 * 1000);
+
+    // جرب المفتاح التالي
+    for (let j = 0; j < KEYS.length; j++) {
+      if (j === selectedKey.index) continue;
+      const nextKey = KEYS[j];
+      const cooldownUntil = await kv.get(`gemini_key_cd_${j}`);
+      if (!cooldownUntil || now >= cooldownUntil) {
+        try {
+          const ai2 = new GoogleGenAI({ apiKey: nextKey });
+          const result2 = await ai2.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+          });
+          const text2 =
+            result2?.response?.candidates?.[0]?.content?.parts?.[0]?.text ||
+            result2?.text ||
+            "No response";
+
+          return res.status(200).json({ reply: text2 });
+        } catch (err2) {
+          await kv.set(`gemini_key_cd_${j}`, now + COOLDOWN_HOURS * 60 * 60 * 1000);
+          continue;
+        }
+      }
+    }
+
+    return res.status(500).json({ error: "كل المفاتيح في فترة Cool-down" });
   }
 }
