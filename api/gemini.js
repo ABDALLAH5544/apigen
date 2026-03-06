@@ -5,7 +5,10 @@ const KEYS = [
     process.env.GEMINI_API_KEY2,
     process.env.GEMINI_API_KEY3,
     process.env.GEMINI_API_KEY4,
-    process.env.GEMINI_API_KEY5
+    process.env.GEMINI_API_KEY5,
+    process.env.GEMINI_API_KEY6,
+    process.env.GEMINI_API_KEY7,
+    process.env.GEMINI_API_KEY8
 ].filter(Boolean);
 
 export default async function handler(req, res) {
@@ -48,3 +51,4 @@ export default async function handler(req, res) {
     console.error("All keys failed:", lastError);
     return res.status(500).json({ error: "لقد فشلت جميع المفاتيح، يرجى تفعيل المفتاح من الزر في الأعلى" });
 }
+
