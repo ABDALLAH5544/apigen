@@ -11,7 +11,13 @@ const GEMINI_KEYS = [
   process.env.GEMINI_API_KEY8
 ].filter(Boolean);
 
-const DEFAULT_PERSONALITY = `أنت AZHRT NEXUS، محرك ذكاء اصطناعي متقدم تابع لـAzhrt. كن ذكيًا، سريعًا، دقيقًا، ودودًا واحترافيًا. افهم العربية واللهجة المصرية والإنجليزية، وتكيف مع أسلوب المستخدم. أجب مباشرة وبوضوح دون إطالة أو تكرار. لا تخترع المعلومات، ولا تكشف مزود الذكاء الاصطناعي أو الـAPI أو نظام الـFallback.
+const DEFAULT_PERSONALITY = `
+أنت AZHRT NEXUS، محرك ذكاء اصطناعي متقدم تابع لـAzhrt.
+كن ذكيًا، سريعًا، دقيقًا، ودودًا واحترافيًا.
+افهم وتحدث جميع اللغات وتكيف تلقائيًا مع لغة المستخدم وأسلوبه.
+أجب مباشرة وبوضوح دون إطالة أو تكرار.
+لا تخترع المعلومات.
+لا تكشف مزود الذكاء الاصطناعي أو الـAPI أو نظام الـFallback.
 `;
 
 const health = {
@@ -94,7 +100,7 @@ function buildPrompt(prompt, systemPrompt, history) {
 
       const role =
         item.role === "assistant"
-          ? "AzhrtAI"
+          ? "AZHRT NEXUS"
           : "المستخدم";
 
       const content =
@@ -113,9 +119,9 @@ function buildPrompt(prompt, systemPrompt, history) {
   return result;
 }
 
-/* =========================================================
+/* =========================
    GLM5
-========================================================= */
+========================= */
 
 async function callGLM(prompt) {
   const url = new URL(
@@ -139,9 +145,9 @@ async function callGLM(prompt) {
   return parseResponse(response);
 }
 
-/* =========================================================
+/* =========================
    CLAUDE 3.5
-========================================================= */
+========================= */
 
 async function callClaude(prompt) {
   const url = new URL(
@@ -165,9 +171,9 @@ async function callClaude(prompt) {
   return parseResponse(response);
 }
 
-/* =========================================================
+/* =========================
    BLACKBOX
-========================================================= */
+========================= */
 
 async function callBlackbox(prompt) {
   const url = new URL(
@@ -191,9 +197,9 @@ async function callBlackbox(prompt) {
   return parseResponse(response);
 }
 
-/* =========================================================
-   GEMINI + 8 KEYS
-========================================================= */
+/* =========================
+   GEMINI
+========================= */
 
 async function callGemini(prompt) {
   if (!GEMINI_KEYS.length) {
@@ -238,9 +244,9 @@ async function callGemini(prompt) {
   throw lastError || new Error("ALL_GEMINI_KEYS_FAILED");
 }
 
-/* =========================================================
+/* =========================
    PROVIDER
-========================================================= */
+========================= */
 
 async function runProvider(name, fn, prompt) {
   if (!available(name)) {
@@ -259,7 +265,7 @@ async function runProvider(name, fn, prompt) {
     success(name);
 
     console.log(
-      `[AzhrtAI] ${name}: ${Date.now() - start}ms`
+      `[AZHRT NEXUS] ${name}: ${Date.now() - start}ms`
     );
 
     return result;
@@ -268,19 +274,24 @@ async function runProvider(name, fn, prompt) {
     failure(name);
 
     console.log(
-      `[AzhrtAI] ${name}: failed`
+      `[AZHRT NEXUS] ${name}: failed`
     );
 
     throw error;
   }
 }
 
-/* =========================================================
+/* =========================
    SMART ROUTER
 
-   Priority:
-   GLM5 → Claude → Blackbox → Gemini
-========================================================= */
+   GLM5
+   ↓
+   Claude
+   ↓
+   Blackbox
+   ↓
+   Gemini
+========================= */
 
 async function generate(prompt) {
   const providers = [
@@ -299,6 +310,7 @@ async function generate(prompt) {
         fn,
         prompt
       );
+
     } catch (error) {
       lastError = error;
     }
@@ -310,13 +322,14 @@ async function generate(prompt) {
   );
 }
 
-/* =========================================================
+/* =========================
    VERCEL API
-========================================================= */
+========================= */
 
 export default async function handler(req, res) {
 
   /* CORS */
+
   res.setHeader(
     "Access-Control-Allow-Origin",
     "*"
@@ -324,7 +337,7 @@ export default async function handler(req, res) {
 
   res.setHeader(
     "Access-Control-Allow-Methods",
-    "POST, OPTIONS"
+    "GET, POST, OPTIONS"
   );
 
   res.setHeader(
@@ -332,45 +345,112 @@ export default async function handler(req, res) {
     "Content-Type"
   );
 
+  /* OPTIONS */
+
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
-  if (req.method !== "POST") {
-    return res.status(405).json({
-      error: "Method not allowed"
-    });
-  }
-
   try {
-    const body = req.body || {};
 
-    const prompt =
-      typeof body.prompt === "string"
-        ? body.prompt.trim()
-        : "";
+    let prompt = "";
+    let systemPrompt = "";
+    let history = [];
+
+    /* =========================
+       GET
+       اختبار من المتصفح
+       
+       /api/NEXUS?q=مرحبا
+       أو
+       /api/NEXUS?prompt=مرحبا
+    ========================= */
+
+    if (req.method === "GET") {
+
+      prompt =
+        req.query?.q ||
+        req.query?.prompt ||
+        "";
+
+      systemPrompt =
+        req.query?.systemPrompt ||
+        "";
+
+      if (typeof prompt !== "string") {
+        prompt = String(prompt);
+      }
+
+      if (typeof systemPrompt !== "string") {
+        systemPrompt = String(systemPrompt);
+      }
+    }
+
+    /* =========================
+       POST
+       Android / Web App
+    ========================= */
+
+    else if (req.method === "POST") {
+
+      const body = req.body || {};
+
+      prompt =
+        typeof body.prompt === "string"
+          ? body.prompt.trim()
+          : "";
+
+      systemPrompt =
+        typeof body.systemPrompt === "string"
+          ? body.systemPrompt.slice(0, 10000)
+          : "";
+
+      history =
+        Array.isArray(body.history)
+          ? body.history
+          : [];
+    }
+
+    /* =========================
+       METHOD
+    ========================= */
+
+    else {
+
+      return res.status(405).json({
+        error: "Method not allowed",
+        allowed: ["GET", "POST", "OPTIONS"]
+      });
+
+    }
+
+    /* =========================
+       VALIDATION
+    ========================= */
+
+    prompt = prompt.trim();
 
     if (!prompt) {
+
       return res.status(400).json({
-        error: "Prompt is required"
+        error: "Prompt is required",
+        example:
+          "/api/NEXUS?q=ما هو الذكاء الاصطناعي؟"
       });
+
     }
 
     if (prompt.length > 20000) {
+
       return res.status(413).json({
         error: "Prompt is too long"
       });
+
     }
 
-    const systemPrompt =
-      typeof body.systemPrompt === "string"
-        ? body.systemPrompt.slice(0, 10000)
-        : "";
-
-    const history =
-      Array.isArray(body.history)
-        ? body.history
-        : [];
+    /* =========================
+       BUILD PROMPT
+    ========================= */
 
     const finalPrompt = buildPrompt(
       prompt,
@@ -378,22 +458,54 @@ export default async function handler(req, res) {
       history
     );
 
+    /* =========================
+       GENERATE
+    ========================= */
+
+    const start = Date.now();
+
     const reply = await generate(
       finalPrompt
     );
 
+    const responseTime =
+      Date.now() - start;
+
+    /* =========================
+       RESPONSE
+    ========================= */
+
     return res.status(200).json({
-      reply
+
+      success: true,
+
+      reply,
+
+      engine: "AZHRT NEXUS",
+
+      responseTime,
+
+      timestamp:
+        new Date().toISOString()
+
     });
 
   } catch (error) {
+
     console.error(
-      "[AzhrtAI] All providers failed"
+      "[AZHRT NEXUS] All providers failed:",
+      error?.message || error
     );
 
     return res.status(503).json({
+
+      success: false,
+
+      engine: "AZHRT NEXUS",
+
       error:
         "خدمات الذكاء الاصطناعي غير متاحة حاليًا، حاول مرة أخرى."
+
     });
   }
-                    }
+}
