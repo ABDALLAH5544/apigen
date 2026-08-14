@@ -1,45 +1,39 @@
 import { GoogleGenAI } from "@google/genai";
 
-/*
-===========================================================
-                    AZHRT NEXUS
-===========================================================
+/* =========================================================
+   AZHRT NEXUS
+   Fast AI Backend for Vercel
 
-STRATEGY:
+   Priority:
+   1. Groq - Llama 3.1 8B Instant
+   2. Gemini 2.5 Flash
+   3. GLM5
+   4. Claude 3.5
+   5. Blackbox
 
-Every request:
+   Environment Variables:
+   GROQ_API_KEY
+   GEMINI_API_KEY1
+   GEMINI_API_KEY2
+   GEMINI_API_KEY3
+   ...
+   GEMINI_API_KEY8
+========================================================= */
 
-1. Randomly choose ONE Solo provider:
-   - GLM5
-   - Claude 3.5
-   - Blackbox
 
-2. Try ONLY that provider.
+/* =========================================================
+   CONFIG
+========================================================= */
 
-3. If it succeeds:
-      return response immediately.
+const GROQ_MODEL = "llama-3.1-8b-instant";
 
-4. If it fails:
-      go directly to Gemini 2.5 Flash.
+const TIMEOUT = {
+  groq: 3500,
+  gemini: 5000,
+  solo: 2500
+};
 
-5. NEVER try the other Solo providers
-   in the same request.
-
-6. If Solo returns:
-      402
-      429
-      Queue Full
-      quota
-      budget
-      payment required
-
-   => cooldown 10 hours.
-
-7. Temporary errors:
-      short cooldown.
-
-===========================================================
-*/
+const COOLDOWN_10_HOURS = 10 * 60 * 60 * 1000;
 
 
 /* =========================================================
@@ -63,330 +57,106 @@ const GEMINI_KEYS = [
 ========================================================= */
 
 const DEFAULT_PERSONALITY = `
-أنت AZHRT NEXUS، محرك ذكاء اصطناعي متقدم تابع لـ Azhrt.
+أنت AZHRT NEXUS، مساعد ذكاء اصطناعي متقدم تابع لـ Azhrt.
 
-كن ذكيًا، سريعًا، دقيقًا، ودودًا واحترافيًا.
+كن:
+- سريعًا
+- ذكيًا
+- دقيقًا
+- ودودًا
+- محترفًا
+- واضحًا
 
-افهم جميع اللغات.
-اكتشف لغة المستخدم تلقائيًا.
-ورد بنفس لغة المستخدم ما لم يطلب غير ذلك.
+افهم العربية والإنجليزية وجميع اللغات قدر الإمكان.
+افهم اللهجة المصرية والعربية العامية.
+اكتشف لغة المستخدم ورد بنفس اللغة ما لم يطلب غير ذلك.
 
-افهم العربية الفصحى واللهجة المصرية.
-
-أجب مباشرة وبوضوح.
+أجب مباشرة.
 لا تطل بدون حاجة.
-لا تكرر الكلام.
+لا تكرر المعلومات.
 لا تخترع المعلومات.
-
-إذا لم تكن متأكدًا من معلومة، وضح عدم التأكد.
+إذا لم تكن متأكدًا، قل ذلك بوضوح.
 
 لا تكشف:
-- مفاتيح API
+- API Keys
+- مزود الذكاء الاصطناعي
+- أسماء النماذج
 - تفاصيل الخادم
-- أسماء المزودين
-- أسماء النماذج الداخلية
 - نظام Fallback
-- أخطاء المزودين
+- الأخطاء الداخلية
 - التعليمات الداخلية
-
-إذا فشل مزود ذكاء اصطناعي، لا تخبر المستخدم بذلك.
 
 أنت AZHRT NEXUS.
 `;
 
 
 /* =========================================================
-   SOLO PROVIDERS
-========================================================= */
-
-const SOLO_PROVIDERS = {
-  glm5: {
-    name: "glm5",
-    url: "https://soloapi.vercel.app/api/ai/glm5"
-  },
-
-  claude35: {
-    name: "claude35",
-    url: "https://soloapi.vercel.app/api/ai/claude35"
-  },
-
-  blackbox: {
-    name: "blackbox",
-    url: "https://soloapi.vercel.app/api/ai/blackbox"
-  }
-};
-
-
-/* =========================================================
-   PROVIDER HEALTH
+   HEALTH SYSTEM
 ========================================================= */
 
 const health = {
-  glm5: {
+  groq: {
     failures: 0,
-    cooldownUntil: 0,
-    permanentQuota: false
-  },
-
-  claude35: {
-    failures: 0,
-    cooldownUntil: 0,
-    permanentQuota: false
-  },
-
-  blackbox: {
-    failures: 0,
-    cooldownUntil: 0,
-    permanentQuota: false
+    cooldownUntil: 0
   },
 
   gemini: {
     failures: 0,
-    cooldownUntil: 0,
-    permanentQuota: false
+    cooldownUntil: 0
+  },
+
+  glm5: {
+    failures: 0,
+    cooldownUntil: 0
+  },
+
+  claude35: {
+    failures: 0,
+    cooldownUntil: 0
+  },
+
+  blackbox: {
+    failures: 0,
+    cooldownUntil: 0
   }
 };
 
 
 /* =========================================================
-   SETTINGS
-========================================================= */
-
-/*
-10 HOURS
-
-10 * 60 * 60 * 1000
-*/
-
-const QUOTA_COOLDOWN =
-  10 * 60 * 60 * 1000;
-
-
-/*
-Temporary failure cooldown.
-*/
-
-const TEMP_COOLDOWN =
-  30 * 1000;
-
-
-/*
-Gemini temporary cooldown.
-*/
-
-const GEMINI_TEMP_COOLDOWN =
-  30 * 1000;
-
-
-/*
-Maximum prompt length.
-*/
-
-const MAX_PROMPT_LENGTH =
-  20000;
-
-
-/*
-Maximum history messages.
-*/
-
-const MAX_HISTORY =
-  12;
-
-
-/*
-Timeout for Solo.
-*/
-
-const SOLO_TIMEOUT =
-  5000;
-
-
-/*
-Timeout for Gemini.
-*/
-
-const GEMINI_TIMEOUT =
-  8000;
-
-
-/* =========================================================
-   RANDOM
-========================================================= */
-
-function randomItem(array) {
-
-  return array[
-    Math.floor(
-      Math.random() * array.length
-    )
-  ];
-
-}
-
-
-/* =========================================================
-   PROVIDER AVAILABLE
+   HEALTH FUNCTIONS
 ========================================================= */
 
 function isAvailable(name) {
-
-  const item =
-    health[name];
-
-  if (!item) {
-    return true;
-  }
-
-
-  /*
-  Quota provider currently unavailable.
-  */
-
-  if (
-    item.permanentQuota
-  ) {
-
-    return false;
-  }
-
-
-  /*
-  Cooldown.
-  */
-
-  if (
-    Date.now() < item.cooldownUntil
-  ) {
-
-    return false;
-  }
-
-
-  return true;
+  return Date.now() >= health[name].cooldownUntil;
 }
 
-
-/* =========================================================
-   PROVIDER SUCCESS
-========================================================= */
 
 function markSuccess(name) {
-
-  if (!health[name]) {
-    return;
-  }
-
-
   health[name].failures = 0;
-
-  /*
-  Do not remove quota state accidentally.
-  */
-
-  if (
-    !health[name].permanentQuota
-  ) {
-
-    health[name].cooldownUntil = 0;
-  }
+  health[name].cooldownUntil = 0;
 }
 
 
-/* =========================================================
-   PROVIDER FAILURE
-========================================================= */
-
-function markFailure(
-  name,
-  type = "temporary"
-) {
-
-  if (!health[name]) {
-    return;
-  }
-
+function markFailure(name, permanentCooldown = false) {
 
   health[name].failures++;
 
+  if (permanentCooldown) {
+    health[name].cooldownUntil =
+      Date.now() + COOLDOWN_10_HOURS;
+
+    return;
+  }
 
   /*
-  QUOTA / PAYMENT / RATE LIMIT
-
-  Stop provider for 10 hours.
+    بعد فشلين متتاليين
+    نعمل cooldown قصير.
   */
 
-  if (
-    type === "quota"
-  ) {
-
-    health[name].permanentQuota = true;
+  if (health[name].failures >= 2) {
 
     health[name].cooldownUntil =
-      Date.now() + QUOTA_COOLDOWN;
-
-    /*
-    After 10 hours the provider
-    becomes available again.
-    */
-
-    return;
-  }
-
-
-  /*
-  Temporary error.
-  */
-
-  health[name].cooldownUntil =
-    Date.now() + TEMP_COOLDOWN;
-}
-
-
-/* =========================================================
-   RESET EXPIRED QUOTA
-========================================================= */
-
-function refreshProvider(name) {
-
-  const item =
-    health[name];
-
-  if (!item) {
-    return;
-  }
-
-
-  if (
-    item.permanentQuota &&
-    Date.now() >= item.cooldownUntil
-  ) {
-
-    item.permanentQuota = false;
-
-    item.cooldownUntil = 0;
-
-    item.failures = 0;
-
-    console.log(
-      `[AZHRT NEXUS] ${name} quota cooldown expired`
-    );
-  }
-}
-
-
-/* =========================================================
-   REFRESH ALL
-========================================================= */
-
-function refreshAllProviders() {
-
-  for (
-    const name
-    of Object.keys(health)
-  ) {
-
-    refreshProvider(name);
+      Date.now() + 30000;
   }
 }
 
@@ -395,24 +165,18 @@ function refreshAllProviders() {
    FETCH WITH TIMEOUT
 ========================================================= */
 
-async function fetchTimeout(
+async function fetchWithTimeout(
   url,
   options = {},
-  timeout = 5000
+  timeout = 3000
 ) {
 
-  const controller =
-    new AbortController();
+  const controller = new AbortController();
 
-
-  const timer =
-    setTimeout(
-      () => {
-        controller.abort();
-      },
-      timeout
-    );
-
+  const timer = setTimeout(
+    () => controller.abort(),
+    timeout
+  );
 
   try {
 
@@ -420,14 +184,14 @@ async function fetchTimeout(
       url,
       {
         ...options,
-        signal:
-          controller.signal
+        signal: controller.signal
       }
     );
 
   } finally {
 
     clearTimeout(timer);
+
   }
 }
 
@@ -436,167 +200,37 @@ async function fetchTimeout(
    SAFE JSON
 ========================================================= */
 
-async function safeJson(response) {
+async function safeJSON(response) {
 
   try {
-
     return await response.json();
-
   } catch {
-
     return null;
   }
+
 }
 
 
 /* =========================================================
-   ERROR CLASSIFICATION
-========================================================= */
-
-function classifyProviderError(
-  response,
-  data
-) {
-
-  const httpStatus =
-    Number(
-      response?.status
-    ) || 0;
-
-
-  const raw =
-    JSON.stringify(
-      data || {}
-    ).toLowerCase();
-
-
-  /*
-  QUOTA / PAYMENT / RATE LIMIT
-  */
-
-  const quotaWords = [
-
-    "402",
-
-    "payment required",
-
-    "budget too low",
-
-    "api key budget",
-
-    "quota exceeded",
-
-    "quota",
-
-    "insufficient balance",
-
-    "insufficient funds",
-
-    "429",
-
-    "too many requests",
-
-    "rate limit",
-
-    "rate_limit",
-
-    "queue full",
-
-    "queue is full",
-
-    "max: 1",
-
-    "credits"
-
-  ];
-
-
-  for (
-    const word
-    of quotaWords
-  ) {
-
-    if (
-      raw.includes(word)
-    ) {
-
-      return {
-        type: "quota",
-        status:
-          httpStatus || 429
-      };
-
-    }
-  }
-
-
-  /*
-  HTTP quota codes.
-  */
-
-  if (
-    httpStatus === 402 ||
-    httpStatus === 429
-  ) {
-
-    return {
-      type: "quota",
-      status: httpStatus
-    };
-  }
-
-
-  /*
-  AUTH / SERVER / TIMEOUT
-  */
-
-  if (
-    httpStatus >= 400
-  ) {
-
-    return {
-      type: "temporary",
-      status: httpStatus
-    };
-  }
-
-
-  return null;
-}
-
-
-/* =========================================================
-   EXTRACT TEXT
+   NORMALIZE AI RESPONSE
 ========================================================= */
 
 function extractText(data) {
 
   if (!data) {
-    return null;
+    return "";
   }
 
-
-  const values = [
-
-    data.message,
-
+  const candidates = [
     data.reply,
-
+    data.message,
     data.response,
-
     data.text,
-
     data.output,
-
-    data.result
-
+    data.content
   ];
 
-
-  for (
-    const value
-    of values
-  ) {
+  for (const value of candidates) {
 
     if (
       typeof value === "string" &&
@@ -604,174 +238,42 @@ function extractText(data) {
     ) {
 
       return value.trim();
+
     }
+
   }
 
-
-  /*
-  Some APIs return:
-
-  {
-    data: {
-      message: "..."
-    }
-  }
-  */
-
-  if (
-    data.data &&
-    typeof data.data === "object"
-  ) {
-
-    const nested =
-      extractText(
-        data.data
-      );
-
-    if (nested) {
-      return nested;
-    }
-  }
-
-
-  return null;
+  return "";
 }
 
 
 /* =========================================================
-   VALID AI RESPONSE
+   ERROR CLASSIFICATION
 ========================================================= */
 
-function isValidAIResponse(text) {
+function isPermanentProviderError(status) {
 
-  if (
-    typeof text !== "string"
-  ) {
+  return (
+    status === 402 ||
+    status === 401 ||
+    status === 403
+  );
 
-    return false;
-  }
-
-
-  const value =
-    text.trim();
-
-
-  if (!value) {
-    return false;
-  }
-
-
-  /*
-  Never accept provider errors
-  as an AI response.
-  */
-
-  const lower =
-    value.toLowerCase();
-
-
-  const badMessages = [
-
-    "payment required",
-
-    "queue full",
-
-    "queue is full",
-
-    "api key budget too low",
-
-    "budget too low",
-
-    "too many requests",
-
-    "rate limit",
-
-    "rate_limit",
-
-    "internal server error",
-
-    "service unavailable",
-
-    "bad gateway",
-
-    "unauthorized",
-
-    "forbidden"
-
-  ];
-
-
-  for (
-    const message
-    of badMessages
-  ) {
-
-    if (
-      lower.includes(message)
-    ) {
-
-      return false;
-    }
-  }
-
-
-  return true;
 }
 
 
-/* =========================================================
-   PARSE RESPONSE
-========================================================= */
+function isTemporaryProviderError(status) {
 
-async function parseProviderResponse(
-  response
-) {
+  return (
+    status === 408 ||
+    status === 409 ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
 
-  const data =
-    await safeJson(
-      response
-    );
-
-
-  const error =
-    classifyProviderError(
-      response,
-      data
-    );
-
-
-  if (error) {
-
-    const err =
-      new Error(
-        "PROVIDER_ERROR"
-      );
-
-    err.providerStatus =
-      error.status;
-
-    err.failureType =
-      error.type;
-
-    throw err;
-  }
-
-
-  const text =
-    extractText(data);
-
-
-  if (
-    !isValidAIResponse(text)
-  ) {
-
-    throw new Error(
-      "INVALID_PROVIDER_RESPONSE"
-    );
-  }
-
-
-  return text.trim();
 }
 
 
@@ -780,7 +282,7 @@ async function parseProviderResponse(
 ========================================================= */
 
 function buildPrompt(
-  prompt,
+  userPrompt,
   systemPrompt,
   history
 ) {
@@ -790,7 +292,7 @@ function buildPrompt(
       typeof systemPrompt === "string" &&
       systemPrompt.trim()
     )
-      ? systemPrompt
+      ? systemPrompt.slice(0, 10000)
       : (
           process.env.AI_SYSTEM_PROMPT ||
           DEFAULT_PERSONALITY
@@ -802,7 +304,7 @@ function buildPrompt(
 
 
   /*
-  History
+    Conversation history
   */
 
   if (
@@ -811,19 +313,19 @@ function buildPrompt(
   ) {
 
     finalPrompt +=
-      "\n\nسياق المحادثة السابقة:\n";
+      "\n\nسياق المحادثة:\n";
 
+
+    /*
+      آخر 8 رسائل فقط
+      لتقليل وقت الاستجابة.
+    */
 
     for (
-      const item
-      of history.slice(
-        -MAX_HISTORY
-      )
+      const item of history.slice(-8)
     ) {
 
-      if (!item) {
-        continue;
-      }
+      if (!item) continue;
 
 
       const role =
@@ -838,168 +340,134 @@ function buildPrompt(
           : "";
 
 
-      if (content) {
+      if (!content) continue;
 
-        finalPrompt +=
-          `${role}: ${content}\n`;
-      }
+
+      finalPrompt +=
+        `${role}: ${content}\n`;
+
     }
+
   }
 
 
-  /*
-  Current message
-  */
-
   finalPrompt +=
-    `\nرسالة المستخدم الحالية:\n${prompt}`;
+    `\nرسالة المستخدم:\n${userPrompt}`;
 
 
   return finalPrompt;
+
 }
 
 
 /* =========================================================
-   CALL GLM
+   GROQ
 ========================================================= */
 
-async function callGLM(
-  prompt
-) {
+async function callGroq(prompt) {
 
-  const url =
-    new URL(
-      SOLO_PROVIDERS.glm5.url
+  const apiKey =
+    process.env.GROQ_API_KEY;
+
+
+  if (!apiKey) {
+
+    throw new Error(
+      "GROQ_API_KEY_MISSING"
     );
 
-
-  url.searchParams.set(
-    "q",
-    prompt
-  );
+  }
 
 
   const response =
-    await fetchTimeout(
+    await fetchWithTimeout(
 
-      url.toString(),
+      "https://api.groq.com/openai/v1/chat/completions",
 
       {
-        method: "GET",
+
+        method: "POST",
 
         headers: {
 
-          "User-Agent":
-            "Mozilla/5.0",
+          "Authorization":
+            `Bearer ${apiKey}`,
 
-          "Accept":
+          "Content-Type":
             "application/json"
-        }
+
+        },
+
+        body: JSON.stringify({
+
+          model:
+            GROQ_MODEL,
+
+          messages: [
+
+            {
+              role: "user",
+              content: prompt
+            }
+
+          ],
+
+          /*
+            ردود قصيرة = أسرع.
+          */
+
+          max_tokens: 700,
+
+          temperature: 0.7,
+
+          stream: false
+
+        })
+
       },
 
-      SOLO_TIMEOUT
+      TIMEOUT.groq
+
     );
 
 
-  return parseProviderResponse(
-    response
-  );
-}
+  const data =
+    await safeJSON(response);
 
 
-/* =========================================================
-   CALL CLAUDE
-========================================================= */
+  if (!response.ok) {
 
-async function callClaude(
-  prompt
-) {
+    const error =
+      new Error(
+        `GROQ_HTTP_${response.status}`
+      );
 
-  const url =
-    new URL(
-      SOLO_PROVIDERS.claude35.url
+    error.status =
+      response.status;
+
+    throw error;
+
+  }
+
+
+  const text =
+    data?.choices?.[0]?.message?.content;
+
+
+  if (
+    typeof text !== "string" ||
+    !text.trim()
+  ) {
+
+    throw new Error(
+      "GROQ_EMPTY_RESPONSE"
     );
 
-
-  url.searchParams.set(
-    "q",
-    prompt
-  );
+  }
 
 
-  const response =
-    await fetchTimeout(
+  return text.trim();
 
-      url.toString(),
-
-      {
-        method: "GET",
-
-        headers: {
-
-          "User-Agent":
-            "Mozilla/5.0",
-
-          "Accept":
-            "application/json"
-        }
-      },
-
-      SOLO_TIMEOUT
-    );
-
-
-  return parseProviderResponse(
-    response
-  );
-}
-
-
-/* =========================================================
-   CALL BLACKBOX
-========================================================= */
-
-async function callBlackbox(
-  prompt
-) {
-
-  const url =
-    new URL(
-      SOLO_PROVIDERS.blackbox.url
-    );
-
-
-  url.searchParams.set(
-    "q",
-    prompt
-  );
-
-
-  const response =
-    await fetchTimeout(
-
-      url.toString(),
-
-      {
-        method: "GET",
-
-        headers: {
-
-          "User-Agent":
-            "Mozilla/5.0",
-
-          "Accept":
-            "application/json"
-        }
-      },
-
-      SOLO_TIMEOUT
-    );
-
-
-  return parseProviderResponse(
-    response
-  );
 }
 
 
@@ -1007,32 +475,21 @@ async function callBlackbox(
    GEMINI
 ========================================================= */
 
-async function callGemini(
-  prompt
-) {
+async function callGemini(prompt) {
 
-  if (
-    GEMINI_KEYS.length === 0
-  ) {
+  if (!GEMINI_KEYS.length) {
 
     throw new Error(
       "NO_GEMINI_KEYS"
     );
+
   }
 
 
-  let lastError =
-    null;
+  let lastError = null;
 
 
-  /*
-  Try all Gemini keys.
-  */
-
-  for (
-    const key
-    of GEMINI_KEYS
-  ) {
+  for (const key of GEMINI_KEYS) {
 
     try {
 
@@ -1055,22 +512,16 @@ async function callGemini(
 
           }),
 
-
           new Promise(
             (_, reject) => {
 
               setTimeout(
-                () => {
-
-                  reject(
-                    new Error(
-                      "GEMINI_TIMEOUT"
-                    )
-                  );
-
-                },
-
-                GEMINI_TIMEOUT
+                () => reject(
+                  new Error(
+                    "GEMINI_TIMEOUT"
+                  )
+                ),
+                TIMEOUT.gemini
               );
 
             }
@@ -1084,12 +535,14 @@ async function callGemini(
 
 
       if (
-        !isValidAIResponse(text)
+        typeof text !== "string" ||
+        !text.trim()
       ) {
 
         throw new Error(
-          "INVALID_GEMINI_RESPONSE"
+          "GEMINI_EMPTY_RESPONSE"
         );
+
       }
 
 
@@ -1100,12 +553,8 @@ async function callGemini(
       lastError =
         error;
 
-      /*
-      Try next Gemini key.
-      */
-
-      continue;
     }
+
   }
 
 
@@ -1115,143 +564,216 @@ async function callGemini(
       "ALL_GEMINI_KEYS_FAILED"
     )
   );
+
 }
 
 
 /* =========================================================
-   RANDOM SOLO SELECTION
+   SOLO GENERIC CALLER
 ========================================================= */
 
-function selectRandomSolo() {
-
-  refreshAllProviders();
-
-
-  const availableProviders =
-    Object.values(
-      SOLO_PROVIDERS
-    ).filter(
-      provider =>
-        isAvailable(
-          provider.name
-        )
-    );
-
-
-  /*
-  If all Solo providers
-  are in cooldown:
-
-  go directly to Gemini.
-  */
-
-  if (
-    availableProviders.length === 0
-  ) {
-
-    return null;
-  }
-
-
-  /*
-  RANDOM ONE ONLY
-  */
-
-  return randomItem(
-    availableProviders
-  );
-}
-
-
-/* =========================================================
-   TRY ONE SOLO
-========================================================= */
-
-async function trySolo(
-  provider,
+async function callSolo(
+  endpoint,
   prompt
 ) {
 
-  if (!provider) {
+  const url =
+    new URL(endpoint);
 
-    throw new Error(
-      "NO_SOLO_AVAILABLE"
+
+  url.searchParams.set(
+    "q",
+    prompt
+  );
+
+
+  const response =
+    await fetchWithTimeout(
+
+      url.toString(),
+
+      {
+
+        method: "GET",
+
+        headers: {
+
+          "User-Agent":
+            "Mozilla/5.0",
+
+          Accept:
+            "application/json"
+
+        }
+
+      },
+
+      TIMEOUT.solo
+
     );
+
+
+  const data =
+    await safeJSON(response);
+
+
+  if (!response.ok) {
+
+    const error =
+      new Error(
+        `SOLO_HTTP_${response.status}`
+      );
+
+    error.status =
+      response.status;
+
+    throw error;
+
   }
 
 
-  const name =
-    provider.name;
+  const text =
+    extractText(data);
 
 
-  const start =
-    Date.now();
+  if (!text) {
+
+    throw new Error(
+      "SOLO_EMPTY_RESPONSE"
+    );
+
+  }
 
 
-  console.log(
-    `[AZHRT NEXUS] Random Solo selected: ${name}`
+  /*
+    منع رسائل الخطأ التي قد تأتي
+    داخل HTTP 200.
+  */
+
+  const lower =
+    text.toLowerCase();
+
+
+  const badResponses = [
+
+    "payment required",
+    "api key budget too low",
+    "queue full",
+    "too many requests",
+    "service unavailable",
+    "internal server error",
+    "unauthorized",
+    "forbidden"
+
+  ];
+
+
+  if (
+    badResponses.some(
+      x => lower.includes(x)
+    )
+  ) {
+
+    throw new Error(
+      "SOLO_ERROR_RESPONSE"
+    );
+
+  }
+
+
+  return text;
+
+}
+
+
+/* =========================================================
+   GLM
+========================================================= */
+
+async function callGLM(prompt) {
+
+  return callSolo(
+    "https://soloapi.vercel.app/api/ai/glm5",
+    prompt
   );
+
+}
+
+
+/* =========================================================
+   CLAUDE
+========================================================= */
+
+async function callClaude(prompt) {
+
+  return callSolo(
+    "https://soloapi.vercel.app/api/ai/claude35",
+    prompt
+  );
+
+}
+
+
+/* =========================================================
+   BLACKBOX
+========================================================= */
+
+async function callBlackbox(prompt) {
+
+  return callSolo(
+    "https://soloapi.vercel.app/api/ai/blackbox",
+    prompt
+  );
+
+}
+
+
+/* =========================================================
+   RUN PROVIDER
+========================================================= */
+
+async function runProvider(
+  name,
+  fn,
+  prompt
+) {
+
+  if (!isAvailable(name)) {
+
+    throw new Error(
+      `${name}_COOLDOWN`
+    );
+
+  }
+
+
+  const started =
+    Date.now();
 
 
   try {
 
-    let result;
+    const result =
+      await fn(prompt);
 
 
     if (
-      name === "glm5"
-    ) {
-
-      result =
-        await callGLM(
-          prompt
-        );
-
-    } else if (
-      name === "claude35"
-    ) {
-
-      result =
-        await callClaude(
-          prompt
-        );
-
-    } else if (
-      name === "blackbox"
-    ) {
-
-      result =
-        await callBlackbox(
-          prompt
-        );
-
-    } else {
-
-      throw new Error(
-        "UNKNOWN_SOLO_PROVIDER"
-      );
-    }
-
-
-    if (
-      !isValidAIResponse(
-        result
-      )
+      !result ||
+      typeof result !== "string"
     ) {
 
       throw new Error(
-        "INVALID_SOLO_RESPONSE"
+        "EMPTY_RESPONSE"
       );
+
     }
 
 
-    markSuccess(
-      name
-    );
+    markSuccess(name);
 
 
     console.log(
-      `[AZHRT NEXUS] ${name} SUCCESS ${Date.now() - start}ms`
+      `[AZHRT NEXUS] ${name} SUCCESS ${Date.now() - started}ms`
     );
 
 
@@ -1260,142 +782,201 @@ async function trySolo(
   } catch (error) {
 
     /*
-    Quota / Queue / Payment:
-    10 hours.
+      402 / 401 / 403:
+      لا تجرب المزود مرة أخرى
+      لمدة 10 ساعات.
     */
 
     if (
-      error.failureType === "quota"
+      isPermanentProviderError(
+        error?.status
+      )
     ) {
 
       markFailure(
         name,
-        "quota"
+        true
       );
 
-      console.log(
-        `[AZHRT NEXUS] ${name} QUOTA -> 10 HOURS`
-      );
+    }
 
-    } else {
+    /*
+      429 و5xx:
+      cooldown قصير بعد تكرار الفشل.
+    */
+
+    else {
 
       markFailure(
         name,
-        "temporary"
+        false
       );
 
-      console.log(
-        `[AZHRT NEXUS] ${name} TEMPORARY FAILURE`
-      );
     }
 
 
+    console.log(
+      `[AZHRT NEXUS] ${name} FAILED: ${error?.message || "UNKNOWN"}`
+    );
+
+
     throw error;
+
   }
+
 }
 
 
 /* =========================================================
-   MAIN GENERATOR
+   SMART ENGINE
 ========================================================= */
 
-async function generate(
-  prompt
-) {
+async function generate(prompt) {
 
   /*
-  ---------------------------------------------------------
-  STEP 1
-  Randomly select ONE Solo.
-  ---------------------------------------------------------
+    Groq أولًا دائمًا
+    لأنه الأسرع.
   */
 
-  const selected =
-    selectRandomSolo();
-
-
-  /*
-  ---------------------------------------------------------
-  STEP 2
-  Try ONLY selected Solo.
-  ---------------------------------------------------------
-  */
-
-  if (selected) {
+  if (
+    isAvailable("groq")
+  ) {
 
     try {
 
-      const result =
-        await trySolo(
-          selected,
-          prompt
-        );
-
-
-      /*
-      SUCCESS
-      */
-
-      return result;
-
-    } catch (error) {
-
-      /*
-      DO NOT try the other Solo providers.
-
-      Go directly to Gemini.
-      */
-
-      console.log(
-        `[AZHRT NEXUS] ${selected.name} failed -> Gemini`
+      return await runProvider(
+        "groq",
+        callGroq,
+        prompt
       );
+
+    } catch {
+
+      /*
+        انتقل مباشرة إلى Gemini.
+      */
+
     }
+
   }
 
 
   /*
-  ---------------------------------------------------------
-  STEP 3
-  Gemini fallback.
-  ---------------------------------------------------------
+    Gemini
   */
 
-  try {
+  if (
+    isAvailable("gemini")
+  ) {
 
-    const result =
-      await callGemini(
+    try {
+
+      return await runProvider(
+        "gemini",
+        callGemini,
         prompt
       );
 
+    } catch {
+
+      /*
+        انتقل إلى Solo.
+      */
+
+    }
+
+  }
+
+
+  /*
+    Solo APIs
+  */
+
+  const soloProviders = [
+
+    [
+      "glm5",
+      callGLM
+    ],
+
+    [
+      "claude35",
+      callClaude
+    ],
+
+    [
+      "blackbox",
+      callBlackbox
+    ]
+
+  ];
+
+
+  /*
+    ترتيب عشوائي للـSolo
+    حتى لا يتم الضغط دائمًا
+    على نفس المزود.
+  */
+
+  for (
+    let i = soloProviders.length - 1;
+    i > 0;
+    i--
+  ) {
+
+    const j =
+      Math.floor(
+        Math.random() * (i + 1)
+      );
+
+
+    [
+      soloProviders[i],
+      soloProviders[j]
+    ] =
+    [
+      soloProviders[j],
+      soloProviders[i]
+    ];
+
+  }
+
+
+  for (
+    const [name, fn]
+    of soloProviders
+  ) {
 
     if (
-      isValidAIResponse(
-        result
-      )
+      !isAvailable(name)
     ) {
 
-      return result.trim();
+      continue;
+
     }
 
 
-    throw new Error(
-      "INVALID_GEMINI_RESPONSE"
-    );
+    try {
 
-  } catch (error) {
+      return await runProvider(
+        name,
+        fn,
+        prompt
+      );
 
-    /*
-    Gemini failed.
-    */
+    } catch {
 
-    markFailure(
-      "gemini",
-      "temporary"
-    );
+      continue;
 
+    }
 
-    throw error;
   }
+
+
+  throw new Error(
+    "ALL_PROVIDERS_FAILED"
+  );
+
 }
 
 
@@ -1408,11 +989,9 @@ export default async function handler(
   res
 ) {
 
-  /*
-  =========================================================
-  CORS
-  =========================================================
-  */
+  /* =======================================================
+     CORS
+  ======================================================= */
 
   res.setHeader(
     "Access-Control-Allow-Origin",
@@ -1431,9 +1010,7 @@ export default async function handler(
 
 
   /*
-  =========================================================
-  OPTIONS
-  =========================================================
+    OPTIONS
   */
 
   if (
@@ -1443,30 +1020,20 @@ export default async function handler(
     return res
       .status(200)
       .end();
+
   }
+
+
+  let prompt = "";
+  let systemPrompt = "";
+  let history = [];
 
 
   try {
 
-    let prompt =
-      "";
-
-    let systemPrompt =
-      "";
-
-    let history =
-      [];
-
-
-    /*
-    =======================================================
-    GET
-    =======================================================
-
-    Example:
-
-    /api/NEXUS?q=مرحبا
-    */
+    /* =====================================================
+       GET
+    ===================================================== */
 
     if (
       req.method === "GET"
@@ -1482,31 +1049,12 @@ export default async function handler(
         req.query?.systemPrompt ||
         "";
 
-
-      if (
-        typeof prompt !== "string"
-      ) {
-
-        prompt =
-          String(prompt);
-      }
-
-
-      if (
-        typeof systemPrompt !== "string"
-      ) {
-
-        systemPrompt =
-          String(systemPrompt);
-      }
     }
 
 
-    /*
-    =======================================================
-    POST
-    =======================================================
-    */
+    /* =====================================================
+       POST
+    ===================================================== */
 
     else if (
       req.method === "POST"
@@ -1524,10 +1072,7 @@ export default async function handler(
 
       systemPrompt =
         typeof body.systemPrompt === "string"
-          ? body.systemPrompt.slice(
-              0,
-              10000
-            )
+          ? body.systemPrompt
           : "";
 
 
@@ -1535,14 +1080,13 @@ export default async function handler(
         Array.isArray(body.history)
           ? body.history
           : [];
+
     }
 
 
-    /*
-    =======================================================
-    INVALID METHOD
-    =======================================================
-    */
+    /* =====================================================
+       METHOD ERROR
+    ===================================================== */
 
     else {
 
@@ -1550,26 +1094,22 @@ export default async function handler(
         .status(405)
         .json({
 
-          success:
-            false,
+          success: false,
 
           error:
             "Method not allowed"
 
         });
+
     }
 
 
-    /*
-    =======================================================
-    VALIDATION
-    =======================================================
-    */
+    /* =====================================================
+       VALIDATION
+    ===================================================== */
 
     prompt =
-      String(
-        prompt
-      ).trim();
+      String(prompt).trim();
 
 
     if (!prompt) {
@@ -1578,63 +1118,82 @@ export default async function handler(
         .status(400)
         .json({
 
-          success:
-            false,
+          success: false,
 
           error:
-            "Prompt is required",
-
-          example:
-            "/api/NEXUS?q=مرحبا"
+            "Prompt is required"
 
         });
+
     }
 
 
+    /*
+      حماية من الطلبات الضخمة.
+    */
+
     if (
-      prompt.length >
-      MAX_PROMPT_LENGTH
+      prompt.length > 20000
     ) {
 
       return res
         .status(413)
         .json({
 
-          success:
-            false,
+          success: false,
 
           error:
             "Prompt is too long"
 
         });
+
     }
 
 
     /*
-    =======================================================
-    BUILD PROMPT
-    =======================================================
+      تنظيف history
     */
 
-    const finalPrompt =
-      buildPrompt(
+    if (
+      !Array.isArray(history)
+    ) {
 
-        prompt,
+      history = [];
 
-        systemPrompt,
-
-        history
-
-      );
+    }
 
 
     /*
-    =======================================================
-    GENERATE
-    =======================================================
+      حد أقصى للـhistory.
     */
 
-    const start =
+    history =
+      history
+        .slice(-8)
+        .filter(
+          item =>
+            item &&
+            typeof item.content === "string"
+        );
+
+
+    /* =====================================================
+       BUILD PROMPT
+    ===================================================== */
+
+    const finalPrompt =
+      buildPrompt(
+        prompt,
+        systemPrompt,
+        history
+      );
+
+
+    /* =====================================================
+       GENERATE
+    ===================================================== */
+
+    const started =
       Date.now();
 
 
@@ -1645,21 +1204,18 @@ export default async function handler(
 
 
     const responseTime =
-      Date.now() - start;
+      Date.now() - started;
 
 
-    /*
-    =======================================================
-    SUCCESS
-    =======================================================
-    */
+    /* =====================================================
+       SUCCESS
+    ===================================================== */
 
     return res
       .status(200)
       .json({
 
-        success:
-          true,
+        success: true,
 
         reply,
 
@@ -1677,23 +1233,13 @@ export default async function handler(
   } catch (error) {
 
     /*
-    =======================================================
-    FINAL ERROR
-    =======================================================
-
-    Never expose:
-    - 402
-    - 429
-    - Queue Full
-    - API errors
-    - provider names
-    - internal details
+      لا نرسل تفاصيل API
+      للمستخدم.
     */
 
     console.error(
       "[AZHRT NEXUS] ALL PROVIDERS FAILED:",
-      error?.message ||
-        "UNKNOWN"
+      error?.message || error
     );
 
 
@@ -1701,15 +1247,16 @@ export default async function handler(
       .status(503)
       .json({
 
-        success:
-          false,
+        success: false,
 
         engine:
           "AZHRT NEXUS",
 
         reply:
-          "عذرًا، لا أستطيع الرد حاليًا. حاول مرة أخرى بعد قليل."
+          "عذرًا، الخدمة غير متاحة حاليًا. حاول مرة أخرى بعد قليل."
 
       });
+
   }
+
 }
