@@ -2,34 +2,40 @@ import { GoogleGenAI } from "@google/genai";
 
 /*
 =========================================================
-                    AZHRT NEXUS
+                 AZHRT NEXUS v2
 =========================================================
 
-Fast AI Router
+FAST AI ROUTER
 
-Primary:
-  Random:
-    - GLM5
-    - Claude 3.5
-    - Blackbox
+ORDER:
 
-Fallback:
-  - Grok
-  - Gemini 2.5 Flash
+1. Grok
+2. Random:
+   - GLM5
+   - Claude 3.5
+   - Blackbox
+3. Gemini
 
-Any:
-  402
-  401
-  403
-  408
-  429
-  500
-  502
-  503
-  504
-  Timeout
+FAILURE:
+- 401
+- 402
+- 403
+- 408
+- 429
+- 500
+- 502
+- 503
+- 504
+- Timeout
+- Empty response
+- Invalid response
 
-=> يعتبر فشل وينتقل للمزود التالي.
+=> يعتبر فشل وينتقل فورًا للمزود التالي.
+
+NO LONG COOLDOWN.
+
+Provider failed?
+=> It can be used again in the next retry cycle.
 
 =========================================================
 */
@@ -39,11 +45,21 @@ Any:
    CONFIG
 ======================================================= */
 
-const FAST_TIMEOUT = 1800;
-const GEMINI_TIMEOUT = 1800;
-const GROK_TIMEOUT = 1800;
+const FAST_TIMEOUT = 900;
 
-const COOLDOWN_MS = 10 * 60 * 60 * 1000;
+const GROK_TIMEOUT = 1100;
+
+const GEMINI_TIMEOUT = 1100;
+
+/*
+  أقصى وقت للطلب كله تقريبًا.
+*/
+const GLOBAL_TIMEOUT = 6500;
+
+/*
+  عدد دورات إعادة المحاولة.
+*/
+const MAX_CYCLES = 2;
 
 
 /* =======================================================
@@ -89,6 +105,7 @@ const DEFAULT_PERSONALITY = `
 - مختصرًا عند الحاجة
 
 افهم جميع اللغات واللهجات، ومنها العربية واللهجة المصرية.
+
 اكتشف لغة المستخدم ورد عليه بنفس اللغة.
 
 أجب مباشرة بدون مقدمات طويلة.
@@ -110,73 +127,7 @@ const DEFAULT_PERSONALITY = `
 
 
 /* =======================================================
-   PROVIDER STATE
-======================================================= */
-
-const state = {
-
-  glm5: {
-    failedAt: 0
-  },
-
-  claude35: {
-    failedAt: 0
-  },
-
-  blackbox: {
-    failedAt: 0
-  },
-
-  grok: {
-    failedAt: 0
-  },
-
-  gemini: {
-    failedAt: 0
-  }
-
-};
-
-
-/* =======================================================
-   COOLDOWN
-======================================================= */
-
-function isAvailable(name) {
-
-  const item = state[name];
-
-  if (!item) return true;
-
-  if (!item.failedAt) return true;
-
-  return (
-    Date.now() - item.failedAt >= COOLDOWN_MS
-  );
-
-}
-
-
-function markFailed(name) {
-
-  if (state[name]) {
-    state[name].failedAt = Date.now();
-  }
-
-}
-
-
-function markSuccess(name) {
-
-  if (state[name]) {
-    state[name].failedAt = 0;
-  }
-
-}
-
-
-/* =======================================================
-   TIMEOUT FETCH
+   FETCH WITH TIMEOUT
 ======================================================= */
 
 async function fetchWithTimeout(
@@ -214,7 +165,7 @@ async function fetchWithTimeout(
 
 
 /* =======================================================
-   JSON
+   SAFE JSON
 ======================================================= */
 
 async function safeJSON(response) {
@@ -238,7 +189,9 @@ async function safeJSON(response) {
 
 function extractText(data) {
 
-  if (!data) return "";
+  if (!data) {
+    return "";
+  }
 
   const candidates = [
 
@@ -256,7 +209,9 @@ function extractText(data) {
 
     data?.choices?.[0]?.message?.content,
 
-    data?.choices?.[0]?.text
+    data?.choices?.[0]?.text,
+
+    data?.candidates?.[0]?.content?.parts?.[0]?.text
 
   ];
 
@@ -320,21 +275,36 @@ function validateResponse(
 
 
   /*
-    منع رسائل الخطأ من اعتبارها ردًا
+    منع رسائل الخطأ من اعتبارها ردًا.
   */
 
   const badMessages = [
 
     "payment required",
+
     "queue full",
+
     "api key budget too low",
+
     "bad gateway",
+
     "internal server error",
+
     "service unavailable",
+
     "too many requests",
+
     "unauthorized",
+
     "forbidden",
-    "gateway timeout"
+
+    "gateway timeout",
+
+    "temporarily unavailable",
+
+    "request timeout",
+
+    "server error"
 
   ];
 
@@ -404,7 +374,9 @@ function buildPrompt(
       const item of history.slice(-10)
     ) {
 
-      if (!item) continue;
+      if (!item) {
+        continue;
+      }
 
 
       const role =
@@ -460,16 +432,26 @@ async function callGLM(prompt) {
 
   const response =
     await fetchWithTimeout(
+
       url.toString(),
+
       {
         method: "GET",
 
         headers: {
-          "User-Agent": "Mozilla/5.0",
-          "Accept": "application/json"
+
+          "User-Agent":
+            "AZHRT-NEXUS",
+
+          "Accept":
+            "application/json"
+
         }
+
       },
+
       FAST_TIMEOUT
+
     );
 
 
@@ -505,16 +487,26 @@ async function callClaude(prompt) {
 
   const response =
     await fetchWithTimeout(
+
       url.toString(),
+
       {
         method: "GET",
 
         headers: {
-          "User-Agent": "Mozilla/5.0",
-          "Accept": "application/json"
+
+          "User-Agent":
+            "AZHRT-NEXUS",
+
+          "Accept":
+            "application/json"
+
         }
+
       },
+
       FAST_TIMEOUT
+
     );
 
 
@@ -550,16 +542,26 @@ async function callBlackbox(prompt) {
 
   const response =
     await fetchWithTimeout(
+
       url.toString(),
+
       {
         method: "GET",
 
         headers: {
-          "User-Agent": "Mozilla/5.0",
-          "Accept": "application/json"
+
+          "User-Agent":
+            "AZHRT-NEXUS",
+
+          "Accept":
+            "application/json"
+
         }
+
       },
+
       FAST_TIMEOUT
+
     );
 
 
@@ -596,6 +598,7 @@ async function callGrok(prompt) {
       "https://api.x.ai/v1/chat/completions",
 
       {
+
         method: "POST",
 
         headers: {
@@ -649,14 +652,80 @@ async function callGrok(prompt) {
 
 
 /* =======================================================
+   GEMINI SINGLE KEY
+======================================================= */
+
+async function callGeminiKey(
+  key,
+  prompt
+) {
+
+  const ai =
+    new GoogleGenAI({
+      apiKey: key
+    });
+
+
+  const result =
+    await Promise.race([
+
+      ai.models.generateContent({
+
+        model:
+          "gemini-2.5-flash",
+
+        contents:
+          prompt
+
+      }),
+
+      new Promise(
+        (_, reject) => {
+
+          setTimeout(
+            () => reject(
+              new Error(
+                "GEMINI_TIMEOUT"
+              )
+            ),
+            GEMINI_TIMEOUT
+          );
+
+        }
+      )
+
+    ]);
+
+
+  const text =
+    result?.text;
+
+
+  if (
+    !text ||
+    typeof text !== "string" ||
+    !text.trim()
+  ) {
+
+    throw new Error(
+      "EMPTY_GEMINI"
+    );
+
+  }
+
+
+  return text.trim();
+
+}
+
+
+/* =======================================================
    GEMINI
 ======================================================= */
 
 async function callGemini(prompt) {
 
-  if (
-    !GEMINI_KEYS.length
-  ) {
+  if (!GEMINI_KEYS.length) {
 
     throw new Error(
       "NO_GEMINI_KEYS"
@@ -665,92 +734,116 @@ async function callGemini(prompt) {
   }
 
 
-  let lastError =
-    null;
+  /*
+    نجرب المفاتيح بالتوازي.
+
+    أول مفتاح ينجح = النتيجة.
+  */
+
+  const attempts =
+    GEMINI_KEYS.map(
+      async key => {
+
+        try {
+
+          return await callGeminiKey(
+            key,
+            prompt
+          );
+
+        } catch {
+
+          return null;
+
+        }
+
+      }
+    );
 
 
   /*
-    جرب المفاتيح
+    Promise.any ترجع أول نتيجة ناجحة.
   */
 
+  try {
+
+    return await Promise.any(
+      attempts
+    );
+
+  } catch {
+
+    throw new Error(
+      "ALL_GEMINI_KEYS_FAILED"
+    );
+
+  }
+
+}
+
+
+/* =======================================================
+   SHUFFLE
+======================================================= */
+
+function shuffle(array) {
+
+  const result =
+    [...array];
+
+
   for (
-    const key of GEMINI_KEYS
+    let i = result.length - 1;
+    i > 0;
+    i--
   ) {
 
-    try {
-
-      const ai =
-        new GoogleGenAI({
-          apiKey: key
-        });
+    const j =
+      Math.floor(
+        Math.random() * (i + 1)
+      );
 
 
-      const result =
-        await Promise.race([
-
-          ai.models.generateContent({
-
-            model:
-              "gemini-2.5-flash",
-
-            contents:
-              prompt
-
-          }),
-
-          new Promise(
-            (_, reject) => {
-
-              setTimeout(
-                () => reject(
-                  new Error(
-                    "GEMINI_TIMEOUT"
-                  )
-                ),
-                GEMINI_TIMEOUT
-              );
-
-            }
-          )
-
-        ]);
-
-
-      const text =
-        result?.text;
-
-
-      if (
-        !text ||
-        typeof text !== "string" ||
-        !text.trim()
-      ) {
-
-        throw new Error(
-          "EMPTY_GEMINI"
-        );
-
-      }
-
-
-      return text.trim();
-
-    } catch (error) {
-
-      lastError =
-        error;
-
-    }
+    [
+      result[i],
+      result[j]
+    ] = [
+      result[j],
+      result[i]
+    ];
 
   }
 
 
-  throw (
-    lastError ||
-    new Error(
-      "GEMINI_FAILED"
-    )
-  );
+  return result;
+
+}
+
+
+/* =======================================================
+   PROVIDERS
+======================================================= */
+
+function getFastProviders() {
+
+  return shuffle([
+
+    {
+      name: "glm5",
+      fn: callGLM
+    },
+
+    {
+      name: "claude35",
+      fn: callClaude
+    },
+
+    {
+      name: "blackbox",
+      fn: callBlackbox
+    }
+
+  ]);
 
 }
 
@@ -764,17 +857,6 @@ async function runProvider(
   fn,
   prompt
 ) {
-
-  if (
-    !isAvailable(name)
-  ) {
-
-    throw new Error(
-      `${name}_COOLDOWN`
-    );
-
-  }
-
 
   const start =
     Date.now();
@@ -798,9 +880,6 @@ async function runProvider(
     }
 
 
-    markSuccess(name);
-
-
     console.log(
       `[NEXUS] ${name} OK ${Date.now() - start}ms`
     );
@@ -810,12 +889,9 @@ async function runProvider(
 
   } catch (error) {
 
-    markFailed(name);
-
-
     console.log(
-      `[NEXUS] ${name} FAILED:`,
-      error?.message
+      `[NEXUS] ${name} FAILED ${Date.now() - start}ms`,
+      error?.message || error
     );
 
 
@@ -827,59 +903,25 @@ async function runProvider(
 
 
 /* =======================================================
-   RANDOM SOLO PROVIDER
+   GLOBAL TIMEOUT
 ======================================================= */
 
-function getRandomSolo() {
+function createGlobalTimeout() {
 
-  const providers = [
+  return new Promise(
+    (_, reject) => {
 
-    {
-      name: "glm5",
-      fn: callGLM
-    },
+      setTimeout(
+        () => reject(
+          new Error(
+            "GLOBAL_TIMEOUT"
+          )
+        ),
+        GLOBAL_TIMEOUT
+      );
 
-    {
-      name: "claude35",
-      fn: callClaude
-    },
-
-    {
-      name: "blackbox",
-      fn: callBlackbox
     }
-
-  ];
-
-
-  /*
-    تجاهل المزودات الموجودة في cooldown
-  */
-
-  const availableProviders =
-    providers.filter(
-      provider =>
-        isAvailable(provider.name)
-    );
-
-
-  if (
-    !availableProviders.length
-  ) {
-
-    return null;
-
-  }
-
-
-  const index =
-    Math.floor(
-      Math.random() *
-      availableProviders.length
-    );
-
-
-  return availableProviders[index];
+  );
 
 }
 
@@ -893,52 +935,53 @@ async function generate(
 ) {
 
   /*
-    1
-    اختيار عشوائي من:
-    GLM5 / Claude / Blackbox
+    Global timeout.
+
+    مهما حصل لا نترك الطلب معلقًا
+    إلى أجل غير محدود.
   */
 
-  const first =
-    getRandomSolo();
+  const work =
+    generateWithRetry(
+      prompt
+    );
 
 
-  if (first) {
+  return await Promise.race([
 
-    try {
+    work,
 
-      const result =
-        await runProvider(
-          first.name,
-          first.fn,
-          prompt
-        );
+    createGlobalTimeout()
 
+  ]);
 
-      if (result) {
-
-        return result;
-
-      }
-
-    } catch {
-
-      console.log(
-        `[NEXUS] ${first.name} failed`
-      );
-
-    }
-
-  }
+}
 
 
-  /*
-    2
-    Grok
-  */
+/* =======================================================
+   RETRY ENGINE
+======================================================= */
 
-  if (
-    isAvailable("grok")
+async function generateWithRetry(
+  prompt
+) {
+
+  for (
+    let cycle = 1;
+    cycle <= MAX_CYCLES;
+    cycle++
   ) {
+
+    console.log(
+      `[NEXUS] Starting cycle ${cycle}`
+    );
+
+
+    /*
+    =====================================================
+    1. GROK FIRST
+    =====================================================
+    */
 
     try {
 
@@ -959,22 +1002,65 @@ async function generate(
     } catch {
 
       console.log(
-        "[NEXUS] Grok failed"
+        "[NEXUS] Grok failed -> continue"
       );
 
     }
 
-  }
+
+    /*
+    =====================================================
+    2. RANDOM FAST PROVIDERS
+
+    لكن نجرب الثلاثة كلهم
+    وليس واحدًا فقط.
+    =====================================================
+    */
+
+    const providers =
+      getFastProviders();
 
 
-  /*
-    3
-    Gemini
-  */
+    for (
+      const provider of providers
+    ) {
 
-  if (
-    isAvailable("gemini")
-  ) {
+      try {
+
+        const result =
+          await runProvider(
+
+            provider.name,
+
+            provider.fn,
+
+            prompt
+
+          );
+
+
+        if (result) {
+
+          return result;
+
+        }
+
+      } catch {
+
+        console.log(
+          `[NEXUS] ${provider.name} failed -> next`
+        );
+
+      }
+
+    }
+
+
+    /*
+    =====================================================
+    3. GEMINI
+    =====================================================
+    */
 
     try {
 
@@ -995,18 +1081,30 @@ async function generate(
     } catch {
 
       console.log(
-        "[NEXUS] Gemini failed"
+        "[NEXUS] Gemini failed -> next cycle"
+      );
+
+    }
+
+
+    /*
+    =====================================================
+    RETRY
+    =====================================================
+    */
+
+    if (
+      cycle < MAX_CYCLES
+    ) {
+
+      console.log(
+        "[NEXUS] Restarting provider cycle..."
       );
 
     }
 
   }
 
-
-  /*
-    4
-    لو كل شيء فشل
-  */
 
   throw new Error(
     "ALL_PROVIDERS_FAILED"
@@ -1069,11 +1167,11 @@ export default async function handler(
 
 
     /*
-    ================================================
+    =====================================================
     GET
+    =====================================================
 
     /api/NEXUS?q=مرحبا
-    ================================================
     */
 
     if (
@@ -1093,9 +1191,9 @@ export default async function handler(
 
 
     /*
-    ================================================
+    =====================================================
     POST
-    ================================================
+    =====================================================
     */
 
     else if (
@@ -1127,9 +1225,9 @@ export default async function handler(
 
 
     /*
-    ================================================
-    INVALID METHOD
-    ================================================
+    =====================================================
+    METHOD NOT ALLOWED
+    =====================================================
     */
 
     else {
@@ -1149,9 +1247,9 @@ export default async function handler(
 
 
     /*
-    ================================================
+    =====================================================
     VALIDATION
-    ================================================
+    =====================================================
     */
 
     if (
@@ -1203,23 +1301,27 @@ export default async function handler(
 
 
     /*
-    ================================================
-    BUILD
-    ================================================
+    =====================================================
+    BUILD PROMPT
+    =====================================================
     */
 
     const finalPrompt =
       buildPrompt(
+
         prompt,
+
         systemPrompt,
+
         history
+
       );
 
 
     /*
-    ================================================
+    =====================================================
     GENERATE
-    ================================================
+    =====================================================
     */
 
     const start =
@@ -1237,9 +1339,9 @@ export default async function handler(
 
 
     /*
-    ================================================
+    =====================================================
     SUCCESS
-    ================================================
+    =====================================================
     */
 
     return res
@@ -1264,25 +1366,15 @@ export default async function handler(
   } catch (error) {
 
     /*
-    =================================================
-    ALL FAILED
+    =====================================================
+    INTERNAL ERROR
 
-    لا نظهر:
-      402
-      429
-      502
-      API key
-      Cloudflare
-      Grok error
-      Gemini error
-      SoloAPI error
-
-    للمستخدم.
-    =================================================
+    لا نكشف أي تفاصيل للمستخدم.
+    =====================================================
     */
 
     console.error(
-      "[AZHRT NEXUS] ALL PROVIDERS FAILED:",
+      "[AZHRT NEXUS] REQUEST FAILED:",
       error?.message || error
     );
 
