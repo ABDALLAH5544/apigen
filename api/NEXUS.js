@@ -7,30 +7,37 @@ import { GoogleGenAI } from "@google/genai";
 
 FLOW:
 
-1) GROK
-   ↓ failure
+1) GROQ
+      ↓ failure
+
 2) GLM5 + CLAUDE35 + BLACKBOX
-   ↓ all failure
+      ↓ all failure
+
 3) GEMINI
-   Key1 + Key2
-   ↓ both failure
-   Key3 + Key4
-   ↓ both failure
-   Key5 + Key6
-   ↓ both failure
-   Key7 + Key8
-   ↓ all failure
+      Key1 + Key2
+      ↓ both failure
+      Key3 + Key4
+      ↓ both failure
+      Key5 + Key6
+      ↓ both failure
+      Key7 + Key8
+      ↓ all failure
+
 4) RETRY CYCLE
-   ↓
-   GROK AGAIN
+      ↓
+   GROQ AGAIN
 
 IMPORTANT:
-- No 10-hour cooldown
-- Failed providers can retry
-- First successful response wins
-- Solo providers run simultaneously
-- Gemini runs 2 keys simultaneously
-- Global timeout prevents hanging forever
+
+- لا يوجد Cooldown لمدة 10 ساعات
+- أي Provider يفشل يتم تجاوزه
+- أول رد صحيح يفوز
+- Solo الثلاثة يعملون معًا
+- Gemini يعمل 2 Keys معًا
+- لو Batch Gemini فشل ينتقل للـBatch التالي
+- لو الدورة كلها فشلت يعيد من Groq
+- MAX_CYCLES يمنع الدوران للأبد
+- لا يتم إظهار أخطاء المزود للمستخدم
 =========================================================
 */
 
@@ -39,19 +46,39 @@ IMPORTANT:
    CONFIG
 ======================================================= */
 
-const GROK_TIMEOUT = 1500;
-const SOLO_TIMEOUT = 1500;
-const GEMINI_TIMEOUT = 1500;
+const GROQ_TIMEOUT = 1800;
+const SOLO_TIMEOUT = 1800;
+const GEMINI_TIMEOUT = 1800;
 
 /*
   أقصى مدة للدورة الواحدة.
 */
-const CYCLE_TIMEOUT = 5500;
+const CYCLE_TIMEOUT = 7500;
 
 /*
-  أقصى عدد دورات.
+  عدد مرات إعادة الدورة.
+
+  1 =
+  Groq → Solo → Gemini
+
+  2 =
+  Groq → Solo → Gemini
+  ثم
+  Groq → Solo → Gemini
 */
 const MAX_CYCLES = 2;
+
+
+/* =======================================================
+   GROQ
+======================================================= */
+
+const GROQ_API_KEY =
+  process.env.GROQ_API_KEY || "";
+
+const GROQ_MODEL =
+  process.env.GROQ_MODEL ||
+  "llama-3.1-8b-instant";
 
 
 /* =======================================================
@@ -59,26 +86,20 @@ const MAX_CYCLES = 2;
 ======================================================= */
 
 const GEMINI_KEYS = [
+
   process.env.GEMINI_API_KEY1,
   process.env.GEMINI_API_KEY2,
+
   process.env.GEMINI_API_KEY3,
   process.env.GEMINI_API_KEY4,
+
   process.env.GEMINI_API_KEY5,
   process.env.GEMINI_API_KEY6,
+
   process.env.GEMINI_API_KEY7,
   process.env.GEMINI_API_KEY8
+
 ].filter(Boolean);
-
-
-/* =======================================================
-   GROK
-======================================================= */
-
-const GROK_API_KEY =
-  process.env.GROK_API_KEY || "";
-
-const GROK_MODEL =
-  process.env.GROK_MODEL || "grok-3-mini";
 
 
 /* =======================================================
@@ -113,6 +134,7 @@ const DEFAULT_PERSONALITY = `
 - نظام التوجيه
 - نظام Fallback
 - الأخطاء الداخلية
+- تفاصيل التشغيل الداخلية
 
 أنت AZHRT NEXUS.
 `;
@@ -125,11 +147,12 @@ const DEFAULT_PERSONALITY = `
 async function fetchWithTimeout(
   url,
   options = {},
-  timeout = 1500
+  timeout = 1800
 ) {
 
   const controller =
     new AbortController();
+
 
   const timer =
     setTimeout(
@@ -137,13 +160,15 @@ async function fetchWithTimeout(
       timeout
     );
 
+
   try {
 
     return await fetch(
       url,
       {
         ...options,
-        signal: controller.signal
+        signal:
+          controller.signal
       }
     );
 
@@ -185,18 +210,27 @@ function extractText(data) {
     return "";
   }
 
+
   const candidates = [
 
     data.message,
+
     data.reply,
+
     data.response,
+
     data.text,
+
     data.output,
+
     data.content,
 
-    data?.choices?.[0]?.message?.content,
+    data?.choices?.[0]
+      ?.message
+      ?.content,
 
-    data?.choices?.[0]?.text,
+    data?.choices?.[0]
+      ?.text,
 
     data?.candidates?.[0]
       ?.content
@@ -205,7 +239,10 @@ function extractText(data) {
 
   ];
 
-  for (const value of candidates) {
+
+  for (
+    const value of candidates
+  ) {
 
     if (
       typeof value === "string" &&
@@ -218,19 +255,24 @@ function extractText(data) {
 
   }
 
+
   return "";
 
 }
 
 
 /* =======================================================
-   VALIDATE
+   VALIDATE RESPONSE
 ======================================================= */
 
 function validateResponse(
   response,
   data
 ) {
+
+  /*
+    أي HTTP error = فشل
+  */
 
   if (!response.ok) {
 
@@ -239,8 +281,10 @@ function validateResponse(
         `HTTP_${response.status}`
       );
 
+
     error.status =
       response.status;
+
 
     throw error;
 
@@ -251,6 +295,10 @@ function validateResponse(
     extractText(data);
 
 
+  /*
+    لا يوجد نص = فشل
+  */
+
   if (!text) {
 
     throw new Error(
@@ -259,6 +307,10 @@ function validateResponse(
 
   }
 
+
+  /*
+    منع بعض رسائل الخطأ من اعتبارها ردًا صحيحًا
+  */
 
   const badMessages = [
 
@@ -316,20 +368,34 @@ function buildPrompt(
 ) {
 
   const personality =
+
     (
       typeof systemPrompt === "string" &&
       systemPrompt.trim()
     )
-      ? systemPrompt.slice(0, 10000)
+
+      ? systemPrompt.slice(
+          0,
+          10000
+        )
+
       : (
+
           process.env.AI_SYSTEM_PROMPT ||
           DEFAULT_PERSONALITY
+
         );
 
 
   let finalPrompt =
     personality.trim();
 
+
+  /*
+  =======================================================
+  HISTORY
+  =======================================================
+  */
 
   if (
     Array.isArray(history) &&
@@ -373,6 +439,12 @@ function buildPrompt(
   }
 
 
+  /*
+  =======================================================
+  USER MESSAGE
+  =======================================================
+  */
+
   finalPrompt +=
     `\n\nرسالة المستخدم:\n${prompt}`;
 
@@ -383,15 +455,15 @@ function buildPrompt(
 
 
 /* =======================================================
-   GROK
+   GROQ
 ======================================================= */
 
-async function callGrok(prompt) {
+async function callGroq(prompt) {
 
-  if (!GROK_API_KEY) {
+  if (!GROQ_API_KEY) {
 
     throw new Error(
-      "GROK_NOT_CONFIGURED"
+      "GROQ_NOT_CONFIGURED"
     );
 
   }
@@ -400,7 +472,7 @@ async function callGrok(prompt) {
   const response =
     await fetchWithTimeout(
 
-      "https://api.x.ai/v1/chat/completions",
+      "https://api.groq.com/openai/v1/chat/completions",
 
       {
 
@@ -409,7 +481,7 @@ async function callGrok(prompt) {
         headers: {
 
           "Authorization":
-            `Bearer ${GROK_API_KEY}`,
+            `Bearer ${GROQ_API_KEY}`,
 
           "Content-Type":
             "application/json",
@@ -422,7 +494,7 @@ async function callGrok(prompt) {
         body: JSON.stringify({
 
           model:
-            GROK_MODEL,
+            GROQ_MODEL,
 
           messages: [
 
@@ -439,7 +511,7 @@ async function callGrok(prompt) {
 
       },
 
-      GROK_TIMEOUT
+      GROQ_TIMEOUT
 
     );
 
@@ -515,6 +587,10 @@ async function callSolo(
 }
 
 
+/* =======================================================
+   GLM5
+======================================================= */
+
 async function callGLM(prompt) {
 
   return callSolo(
@@ -525,6 +601,10 @@ async function callGLM(prompt) {
 }
 
 
+/* =======================================================
+   CLAUDE35
+======================================================= */
+
 async function callClaude(prompt) {
 
   return callSolo(
@@ -534,6 +614,10 @@ async function callClaude(prompt) {
 
 }
 
+
+/* =======================================================
+   BLACKBOX
+======================================================= */
 
 async function callBlackbox(prompt) {
 
@@ -554,67 +638,96 @@ async function callGeminiKey(
   prompt
 ) {
 
+  if (!key) {
+
+    throw new Error(
+      "EMPTY_GEMINI_KEY"
+    );
+
+  }
+
+
   const ai =
     new GoogleGenAI({
       apiKey: key
     });
 
 
-  const result =
-    await Promise.race([
-
-      ai.models.generateContent({
-
-        model:
-          "gemini-2.5-flash",
-
-        contents:
-          prompt
-
-      }),
-
-      new Promise(
-        (_, reject) => {
-
-          setTimeout(
-            () => reject(
-              new Error(
-                "GEMINI_TIMEOUT"
-              )
-            ),
-            GEMINI_TIMEOUT
-          );
-
-        }
-      )
-
-    ]);
+  let timeout;
 
 
-  const text =
-    result?.text;
+  try {
+
+    const result =
+      await Promise.race([
+
+        ai.models.generateContent({
+
+          model:
+            "gemini-2.5-flash",
+
+          contents:
+            prompt
+
+        }),
 
 
-  if (
-    !text ||
-    typeof text !== "string" ||
-    !text.trim()
-  ) {
+        new Promise(
+          (_, reject) => {
 
-    throw new Error(
-      "EMPTY_GEMINI"
-    );
+            timeout =
+              setTimeout(
+
+                () => reject(
+                  new Error(
+                    "GEMINI_TIMEOUT"
+                  )
+                ),
+
+                GEMINI_TIMEOUT
+
+              );
+
+          }
+        )
+
+      ]);
+
+
+    const text =
+      result?.text;
+
+
+    if (
+      !text ||
+      typeof text !== "string" ||
+      !text.trim()
+    ) {
+
+      throw new Error(
+        "EMPTY_GEMINI"
+      );
+
+    }
+
+
+    return text.trim();
+
+  } finally {
+
+    if (timeout) {
+
+      clearTimeout(timeout);
+
+    }
 
   }
-
-
-  return text.trim();
 
 }
 
 
 /* =======================================================
-   GEMINI 2 KEYS AT A TIME
+   GEMINI BATCH
 ======================================================= */
 
 async function callGeminiBatch(
@@ -632,7 +745,9 @@ async function callGeminiBatch(
 
 
   /*
-    تشغيل مفتاحين فقط معًا.
+  =======================================================
+  مفتاحان معًا
+  =======================================================
   */
 
   const attempts =
@@ -646,7 +761,9 @@ async function callGeminiBatch(
 
 
   /*
-    أول Key ينجح يفوز.
+  =======================================================
+  أول مفتاح ينجح يفوز
+  =======================================================
   */
 
   try {
@@ -684,10 +801,10 @@ async function callGemini(
 
 
   /*
-    1+2
-    3+4
-    5+6
-    7+8
+  =======================================================
+  BATCH 1
+  Key1 + Key2
+  =======================================================
   */
 
   for (
@@ -703,6 +820,13 @@ async function callGemini(
       );
 
 
+    console.log(
+      `[NEXUS] Gemini batch ${
+        Math.floor(i / 2) + 1
+      } started`
+    );
+
+
     try {
 
       const result =
@@ -714,14 +838,24 @@ async function callGemini(
 
       if (result) {
 
+        console.log(
+          `[NEXUS] Gemini batch ${
+            Math.floor(i / 2) + 1
+          } SUCCESS`
+        );
+
+
         return result;
 
       }
 
-    } catch {
+    } catch (error) {
 
       console.log(
-        `[NEXUS] Gemini batch ${i / 2 + 1} failed`
+        `[NEXUS] Gemini batch ${
+          Math.floor(i / 2) + 1
+        } FAILED:`,
+        error?.message
       );
 
     }
@@ -745,62 +879,76 @@ async function firstSuccess(
 ) {
 
   /*
-    Promise.any:
-    أول Promise ينجح يرجع فورًا.
+  =======================================================
+  كل المزودات تعمل في نفس الوقت
+  =======================================================
+  */
 
-    الـPromises الفاشلة يتم تجاهلها.
+  const attempts =
+    providers.map(
+      async provider => {
+
+        const start =
+          Date.now();
+
+
+        try {
+
+          const result =
+            await provider.fn();
+
+
+          if (
+            !result ||
+            !result.trim()
+          ) {
+
+            throw new Error(
+              "EMPTY_RESPONSE"
+            );
+
+          }
+
+
+          console.log(
+
+            `[NEXUS] ${provider.name} OK ` +
+            `${Date.now() - start}ms`
+
+          );
+
+
+          return result.trim();
+
+        } catch (error) {
+
+          console.log(
+
+            `[NEXUS] ${provider.name} FAILED ` +
+            `${Date.now() - start}ms ` +
+            `${error?.message || ""}`
+
+          );
+
+
+          throw error;
+
+        }
+
+      }
+    );
+
+
+  /*
+  =======================================================
+  أول نجاح يفوز
+  =======================================================
   */
 
   try {
 
     return await Promise.any(
-
-      providers.map(
-        async provider => {
-
-          const start =
-            Date.now();
-
-
-          try {
-
-            const result =
-              await provider.fn();
-
-
-            if (
-              !result ||
-              !result.trim()
-            ) {
-
-              throw new Error(
-                "EMPTY_RESPONSE"
-              );
-
-            }
-
-
-            console.log(
-              `[NEXUS] ${provider.name} OK ${Date.now() - start}ms`
-            );
-
-
-            return result.trim();
-
-          } catch (error) {
-
-            console.log(
-              `[NEXUS] ${provider.name} FAILED ${Date.now() - start}ms`
-            );
-
-
-            throw error;
-
-          }
-
-        }
-      )
-
+      attempts
     );
 
   } catch {
@@ -815,7 +963,7 @@ async function firstSuccess(
 
 
 /* =======================================================
-   TIMEOUT WRAPPER
+   TIMEOUT
 ======================================================= */
 
 async function withTimeout(
@@ -832,12 +980,15 @@ async function withTimeout(
 
         timer =
           setTimeout(
+
             () => reject(
               new Error(
                 "STAGE_TIMEOUT"
               )
             ),
+
             timeout
+
           );
 
       }
@@ -872,45 +1023,61 @@ async function runCycle(
 ) {
 
   /*
-  =====================================================
+  =======================================================
   STEP 1
-  GROK
-  =====================================================
+  GROQ
+  =======================================================
   */
+
+  console.log(
+    "[NEXUS] STEP 1 → GROQ"
+  );
+
 
   try {
 
     const result =
       await withTimeout(
 
-        callGrok(prompt),
+        callGroq(prompt),
 
-        GROK_TIMEOUT + 300
+        GROQ_TIMEOUT + 300
 
       );
 
 
     if (result) {
 
+      console.log(
+        "[NEXUS] GROQ SUCCESS"
+      );
+
+
       return result;
 
     }
 
-  } catch {
+  } catch (error) {
 
     console.log(
-      "[NEXUS] Grok failed"
+      "[NEXUS] GROQ FAILED:",
+      error?.message
     );
 
   }
 
 
   /*
-  =====================================================
+  =======================================================
   STEP 2
-  THREE SOLO PROVIDERS TOGETHER
-  =====================================================
+  GLM5 + CLAUDE35 + BLACKBOX
+  =======================================================
   */
+
+  console.log(
+    "[NEXUS] STEP 2 → SOLO × 3"
+  );
+
 
   try {
 
@@ -921,50 +1088,67 @@ async function runCycle(
 
           {
             name: "GLM5",
+
             fn: () =>
               callGLM(prompt)
+
           },
 
           {
-            name: "Claude35",
+            name: "CLAUDE35",
+
             fn: () =>
               callClaude(prompt)
+
           },
 
           {
-            name: "Blackbox",
+            name: "BLACKBOX",
+
             fn: () =>
               callBlackbox(prompt)
+
           }
 
         ]),
 
-        SOLO_TIMEOUT + 500
+        SOLO_TIMEOUT + 700
 
       );
 
 
     if (result) {
 
+      console.log(
+        "[NEXUS] SOLO SUCCESS"
+      );
+
+
       return result;
 
     }
 
-  } catch {
+  } catch (error) {
 
     console.log(
-      "[NEXUS] All Solo providers failed"
+      "[NEXUS] ALL SOLO FAILED:",
+      error?.message
     );
 
   }
 
 
   /*
-  =====================================================
+  =======================================================
   STEP 3
-  GEMINI 2 + 2
-  =====================================================
+  GEMINI
+  =======================================================
   */
+
+  console.log(
+    "[NEXUS] STEP 3 → GEMINI"
+  );
+
 
   try {
 
@@ -974,29 +1158,41 @@ async function runCycle(
         callGemini(prompt),
 
         /*
-          4 batches × timeout
-          لكن لا نتجاوز حد الدورة.
+          4 batches × 1800ms
+          + هامش صغير
         */
 
-        GEMINI_TIMEOUT * 4 + 500
+        (GEMINI_TIMEOUT * 4) + 800
 
       );
 
 
     if (result) {
 
+      console.log(
+        "[NEXUS] GEMINI SUCCESS"
+      );
+
+
       return result;
 
     }
 
-  } catch {
+  } catch (error) {
 
     console.log(
-      "[NEXUS] Gemini failed"
+      "[NEXUS] ALL GEMINI FAILED:",
+      error?.message
     );
 
   }
 
+
+  /*
+  =======================================================
+  CYCLE FAILED
+  =======================================================
+  */
 
   throw new Error(
     "CYCLE_FAILED"
@@ -1024,7 +1220,17 @@ async function generate(
 
 
     console.log(
-      `[NEXUS] Cycle ${cycle} started`
+      `========================================`
+    );
+
+
+    console.log(
+      `[NEXUS] CYCLE ${cycle}/${MAX_CYCLES}`
+    );
+
+
+    console.log(
+      `========================================`
     );
 
 
@@ -1043,7 +1249,11 @@ async function generate(
       if (result) {
 
         console.log(
-          `[NEXUS] SUCCESS cycle=${cycle} time=${Date.now() - start}ms`
+
+          `[NEXUS] SUCCESS ` +
+          `cycle=${cycle} ` +
+          `time=${Date.now() - start}ms`
+
         );
 
 
@@ -1051,16 +1261,42 @@ async function generate(
 
       }
 
-    } catch {
+    } catch (error) {
 
       console.log(
-        `[NEXUS] Cycle ${cycle} failed`
+
+        `[NEXUS] CYCLE ${cycle} FAILED:`,
+        error?.message
+
+      );
+
+    }
+
+
+    /*
+    =====================================================
+    إعادة المحاولة
+    =====================================================
+    */
+
+    if (
+      cycle < MAX_CYCLES
+    ) {
+
+      console.log(
+        "[NEXUS] RETRY → GROQ"
       );
 
     }
 
   }
 
+
+  /*
+  =======================================================
+  كل شيء فشل
+  =======================================================
+  */
 
   throw new Error(
     "ALL_PROVIDERS_FAILED"
@@ -1079,7 +1315,9 @@ export default async function handler(
 ) {
 
   /*
-    CORS
+  =======================================================
+  CORS
+  =======================================================
   */
 
   res.setHeader(
@@ -1087,10 +1325,12 @@ export default async function handler(
     "*"
   );
 
+
   res.setHeader(
     "Access-Control-Allow-Methods",
     "GET, POST, OPTIONS"
   );
+
 
   res.setHeader(
     "Access-Control-Allow-Headers",
@@ -1099,7 +1339,9 @@ export default async function handler(
 
 
   /*
-    OPTIONS
+  =======================================================
+  OPTIONS
+  =======================================================
   */
 
   if (
@@ -1136,6 +1378,7 @@ export default async function handler(
         req.query?.q ||
         req.query?.prompt ||
         "";
+
 
       systemPrompt =
         req.query?.systemPrompt ||
@@ -1180,7 +1423,7 @@ export default async function handler(
 
     /*
     =====================================================
-    METHOD
+    METHOD NOT ALLOWED
     =====================================================
     */
 
@@ -1256,7 +1499,7 @@ export default async function handler(
 
     /*
     =====================================================
-    BUILD
+    BUILD PROMPT
     =====================================================
     */
 
@@ -1321,15 +1564,23 @@ export default async function handler(
 
     /*
     =====================================================
-    FINAL FAILURE
+    INTERNAL LOG ONLY
     =====================================================
     */
 
     console.error(
-      "[AZHRT NEXUS] FAILED:",
+
+      "[AZHRT NEXUS] FINAL FAILURE:",
       error?.message || error
+
     );
 
+
+    /*
+    =====================================================
+    USER RESPONSE
+    =====================================================
+    */
 
     return res
       .status(503)
