@@ -7,37 +7,37 @@ import { GoogleGenAI } from "@google/genai";
 
 FLOW:
 
-1) GROQ
-      ↓ failure
-
-2) GLM5 + CLAUDE35 + BLACKBOX
-      ↓ all failure
-
-3) GEMINI
-      Key1 + Key2
-      ↓ both failure
-      Key3 + Key4
-      ↓ both failure
-      Key5 + Key6
-      ↓ both failure
-      Key7 + Key8
-      ↓ all failure
-
-4) RETRY CYCLE
-      ↓
-   GROQ AGAIN
+1) GROQ KEY 1
+   ↓ فشل
+2) GROQ KEY 2
+   ↓ فشل
+3) GLM5 + CLAUDE35 + BLACKBOX
+   ↓ الثلاثة فشلوا
+4) GEMINI KEY 1 + KEY 2
+   ↓ فشلوا
+5) GEMINI KEY 3 + KEY 4
+   ↓ فشلوا
+6) GEMINI KEY 5 + KEY 6
+   ↓ فشلوا
+7) GEMINI KEY 7 + KEY 8
+   ↓ فشلوا
+8) RETRY CYCLE
+   ↓
+   GROQ KEY 1 مرة أخرى
 
 IMPORTANT:
 
-- لا يوجد Cooldown لمدة 10 ساعات
-- أي Provider يفشل يتم تجاوزه
+- Groq واحد واحد
+- Solo الثلاثة يعملون بالتوازي
+- Gemini مفتاحين بالتوازي
+- لا يوجد Cooldown
+- لا يوجد توقف 10 ساعات
+- أي HTTP Error = فشل
+- Timeout = فشل
+- Empty Response = فشل
 - أول رد صحيح يفوز
-- Solo الثلاثة يعملون معًا
-- Gemini يعمل 2 Keys معًا
-- لو Batch Gemini فشل ينتقل للـBatch التالي
-- لو الدورة كلها فشلت يعيد من Groq
-- MAX_CYCLES يمنع الدوران للأبد
-- لا يتم إظهار أخطاء المزود للمستخدم
+- إذا فشل كل شيء يعيد الدورة
+- لا تظهر الأخطاء الداخلية للمستخدم
 =========================================================
 */
 
@@ -47,25 +47,37 @@ IMPORTANT:
 ======================================================= */
 
 const GROQ_TIMEOUT = 1800;
+
 const SOLO_TIMEOUT = 1800;
+
 const GEMINI_TIMEOUT = 1800;
 
-/*
-  أقصى مدة للدورة الواحدة.
-*/
-const CYCLE_TIMEOUT = 7500;
 
 /*
-  عدد مرات إعادة الدورة.
+  أقصى وقت للدورة.
 
-  1 =
-  Groq → Solo → Gemini
+  Groq:
+  1.8s + 1.8s
 
-  2 =
-  Groq → Solo → Gemini
-  ثم
-  Groq → Solo → Gemini
+  Solo:
+  حوالي 1.8s
+
+  Gemini:
+  4 batches × 1.8s
+
+  لذلك نترك مساحة كافية.
 */
+
+const CYCLE_TIMEOUT = 10500;
+
+
+/*
+  عدد الدورات.
+
+  الدورة الثانية تبدأ من Groq
+  من جديد.
+*/
+
 const MAX_CYCLES = 2;
 
 
@@ -73,8 +85,14 @@ const MAX_CYCLES = 2;
    GROQ
 ======================================================= */
 
-const GROQ_API_KEY =
-  process.env.GROQ_API_KEY || "";
+const GROQ_KEYS = [
+
+  process.env.GROQ_API_KEY1,
+
+  process.env.GROQ_API_KEY2
+
+].filter(Boolean);
+
 
 const GROQ_MODEL =
   process.env.GROQ_MODEL ||
@@ -141,7 +159,7 @@ const DEFAULT_PERSONALITY = `
 
 
 /* =======================================================
-   TIMEOUT FETCH
+   FETCH WITH TIMEOUT
 ======================================================= */
 
 async function fetchWithTimeout(
@@ -207,7 +225,9 @@ async function safeJSON(response) {
 function extractText(data) {
 
   if (!data) {
+
     return "";
+
   }
 
 
@@ -271,7 +291,7 @@ function validateResponse(
 ) {
 
   /*
-    أي HTTP error = فشل
+  أي HTTP Error = فشل
   */
 
   if (!response.ok) {
@@ -296,7 +316,7 @@ function validateResponse(
 
 
   /*
-    لا يوجد نص = فشل
+  Empty Response = فشل
   */
 
   if (!text) {
@@ -309,24 +329,44 @@ function validateResponse(
 
 
   /*
-    منع بعض رسائل الخطأ من اعتبارها ردًا صحيحًا
+  رسائل الخطأ التي لا نعتبرها ردًا صالحًا
   */
 
   const badMessages = [
 
     "payment required",
+
     "queue full",
+
     "api key budget too low",
+
     "bad gateway",
+
     "internal server error",
+
     "service unavailable",
+
     "too many requests",
+
     "unauthorized",
+
     "forbidden",
+
     "gateway timeout",
+
     "temporarily unavailable",
+
     "request timeout",
-    "server error"
+
+    "server error",
+
+    "rate limit",
+
+    "rate_limit",
+
+    "quota exceeded",
+
+    "overloaded"
 
   ];
 
@@ -392,9 +432,9 @@ function buildPrompt(
 
 
   /*
-  =======================================================
+  =====================================================
   HISTORY
-  =======================================================
+  =====================================================
   */
 
   if (
@@ -411,19 +451,26 @@ function buildPrompt(
     ) {
 
       if (!item) {
+
         continue;
+
       }
 
 
       const role =
         item.role === "assistant"
+
           ? "AZHRT NEXUS"
+
           : "المستخدم";
 
 
       const content =
+
         typeof item.content === "string"
+
           ? item.content.trim()
+
           : "";
 
 
@@ -440,9 +487,9 @@ function buildPrompt(
 
 
   /*
-  =======================================================
+  =====================================================
   USER MESSAGE
-  =======================================================
+  =====================================================
   */
 
   finalPrompt +=
@@ -455,15 +502,19 @@ function buildPrompt(
 
 
 /* =======================================================
-   GROQ
+   GROQ SINGLE KEY
 ======================================================= */
 
-async function callGroq(prompt) {
+async function callGroqKey(
+  key,
+  keyNumber,
+  prompt
+) {
 
-  if (!GROQ_API_KEY) {
+  if (!key) {
 
     throw new Error(
-      "GROQ_NOT_CONFIGURED"
+      "EMPTY_GROQ_KEY"
     );
 
   }
@@ -481,7 +532,7 @@ async function callGroq(prompt) {
         headers: {
 
           "Authorization":
-            `Bearer ${GROQ_API_KEY}`,
+            `Bearer ${key}`,
 
           "Content-Type":
             "application/json",
@@ -499,13 +550,18 @@ async function callGroq(prompt) {
           messages: [
 
             {
+
               role: "user",
-              content: prompt
+
+              content:
+                prompt
+
             }
 
           ],
 
-          temperature: 0.7
+          temperature:
+            0.7
 
         })
 
@@ -520,9 +576,143 @@ async function callGroq(prompt) {
     await safeJSON(response);
 
 
-  return validateResponse(
-    response,
-    data
+  const result =
+    validateResponse(
+      response,
+      data
+    );
+
+
+  return result;
+
+}
+
+
+/* =======================================================
+   GROQ
+   KEY 1 → KEY 2
+======================================================= */
+
+async function callGroq(
+  prompt
+) {
+
+  if (!GROQ_KEYS.length) {
+
+    throw new Error(
+      "NO_GROQ_KEYS"
+    );
+
+  }
+
+
+  let lastError =
+    null;
+
+
+  /*
+  =====================================================
+  IMPORTANT:
+
+  لا نستخدم Promise.all هنا.
+
+  Key 1 أولًا.
+  إذا فشل → Key 2.
+  =====================================================
+  */
+
+  for (
+    let i = 0;
+    i < GROQ_KEYS.length;
+    i++
+  ) {
+
+    const key =
+      GROQ_KEYS[i];
+
+
+    const keyNumber =
+      i + 1;
+
+
+    const start =
+      Date.now();
+
+
+    try {
+
+      console.log(
+        `[NEXUS] GROQ KEY ${keyNumber} START`
+      );
+
+
+      const result =
+        await callGroqKey(
+
+          key,
+
+          keyNumber,
+
+          prompt
+
+        );
+
+
+      if (
+        result &&
+        result.trim()
+      ) {
+
+        console.log(
+
+          `[NEXUS] GROQ KEY ${keyNumber} SUCCESS ` +
+          `${Date.now() - start}ms`
+
+        );
+
+
+        return result.trim();
+
+      }
+
+
+      throw new Error(
+        "EMPTY_RESPONSE"
+      );
+
+    } catch (error) {
+
+      lastError =
+        error;
+
+
+      console.log(
+
+        `[NEXUS] GROQ KEY ${keyNumber} FAILED ` +
+        `${Date.now() - start}ms ` +
+        `${error?.message || ""}`
+
+      );
+
+
+      /*
+        لا تتوقف.
+        ينتقل مباشرة للمفتاح التالي.
+      */
+
+    }
+
+  }
+
+
+  throw (
+
+    lastError ||
+
+    new Error(
+      "ALL_GROQ_KEYS_FAILED"
+    )
+
   );
 
 }
@@ -539,7 +729,9 @@ async function callSolo(
 
   const url =
     new URL(
+
       `https://soloapi.vercel.app/api/ai/${endpoint}`
+
     );
 
 
@@ -580,8 +772,11 @@ async function callSolo(
 
 
   return validateResponse(
+
     response,
+
     data
+
   );
 
 }
@@ -591,7 +786,9 @@ async function callSolo(
    GLM5
 ======================================================= */
 
-async function callGLM(prompt) {
+async function callGLM(
+  prompt
+) {
 
   return callSolo(
     "glm5",
@@ -605,7 +802,9 @@ async function callGLM(prompt) {
    CLAUDE35
 ======================================================= */
 
-async function callClaude(prompt) {
+async function callClaude(
+  prompt
+) {
 
   return callSolo(
     "claude35",
@@ -619,7 +818,9 @@ async function callClaude(prompt) {
    BLACKBOX
 ======================================================= */
 
-async function callBlackbox(prompt) {
+async function callBlackbox(
+  prompt
+) {
 
   return callSolo(
     "blackbox",
@@ -635,6 +836,7 @@ async function callBlackbox(prompt) {
 
 async function callGeminiKey(
   key,
+  keyNumber,
   prompt
 ) {
 
@@ -649,11 +851,14 @@ async function callGeminiKey(
 
   const ai =
     new GoogleGenAI({
-      apiKey: key
+
+      apiKey:
+        key
+
     });
 
 
-  let timeout;
+  let timer;
 
 
   try {
@@ -673,15 +878,18 @@ async function callGeminiKey(
 
 
         new Promise(
+
           (_, reject) => {
 
-            timeout =
+            timer =
               setTimeout(
 
                 () => reject(
+
                   new Error(
                     "GEMINI_TIMEOUT"
                   )
+
                 ),
 
                 GEMINI_TIMEOUT
@@ -689,6 +897,7 @@ async function callGeminiKey(
               );
 
           }
+
         )
 
       ]);
@@ -699,9 +908,13 @@ async function callGeminiKey(
 
 
     if (
+
       !text ||
+
       typeof text !== "string" ||
+
       !text.trim()
+
     ) {
 
       throw new Error(
@@ -715,11 +928,112 @@ async function callGeminiKey(
 
   } finally {
 
-    if (timeout) {
+    if (timer) {
 
-      clearTimeout(timeout);
+      clearTimeout(timer);
 
     }
+
+  }
+
+}
+
+
+/* =======================================================
+   FIRST SUCCESS
+======================================================= */
+
+async function firstSuccess(
+  providers
+) {
+
+  if (!providers.length) {
+
+    throw new Error(
+      "NO_PROVIDERS"
+    );
+
+  }
+
+
+  /*
+  =====================================================
+  تشغيل المزودات في نفس الوقت
+  =====================================================
+  */
+
+  const attempts =
+    providers.map(
+
+      async provider => {
+
+        const start =
+          Date.now();
+
+
+        try {
+
+          const result =
+            await provider.fn();
+
+
+          if (
+
+            !result ||
+
+            typeof result !== "string" ||
+
+            !result.trim()
+
+          ) {
+
+            throw new Error(
+              "EMPTY_RESPONSE"
+            );
+
+          }
+
+
+          console.log(
+
+            `[NEXUS] ${provider.name} SUCCESS ` +
+            `${Date.now() - start}ms`
+
+          );
+
+
+          return result.trim();
+
+        } catch (error) {
+
+          console.log(
+
+            `[NEXUS] ${provider.name} FAILED ` +
+            `${Date.now() - start}ms`
+
+          );
+
+
+          throw error;
+
+        }
+
+      }
+
+    );
+
+
+  try {
+
+    return await Promise.any(
+      attempts
+    );
+
+  } catch {
+
+    throw new Error(
+      "ALL_PARALLEL_FAILED"
+    );
 
   }
 
@@ -731,9 +1045,19 @@ async function callGeminiKey(
 ======================================================= */
 
 async function callGeminiBatch(
-  keys,
+  startIndex,
   prompt
 ) {
+
+  const keys =
+    GEMINI_KEYS.slice(
+
+      startIndex,
+
+      startIndex + 2
+
+    );
+
 
   if (!keys.length) {
 
@@ -744,41 +1068,42 @@ async function callGeminiBatch(
   }
 
 
-  /*
-  =======================================================
-  مفتاحان معًا
-  =======================================================
-  */
-
-  const attempts =
+  const providers =
     keys.map(
-      key =>
-        callGeminiKey(
-          key,
-          prompt
-        )
+
+      (key, index) => ({
+
+        name:
+          `GEMINI_KEY_${
+            startIndex + index + 1
+          }`,
+
+        fn:
+          () =>
+            callGeminiKey(
+
+              key,
+
+              startIndex + index + 1,
+
+              prompt
+
+            )
+
+      })
+
     );
 
 
   /*
-  =======================================================
-  أول مفتاح ينجح يفوز
-  =======================================================
+  =====================================================
+  مفتاحين معًا
+  =====================================================
   */
 
-  try {
-
-    return await Promise.any(
-      attempts
-    );
-
-  } catch {
-
-    throw new Error(
-      "GEMINI_BATCH_FAILED"
-    );
-
-  }
+  return firstSuccess(
+    providers
+  );
 
 }
 
@@ -801,29 +1126,30 @@ async function callGemini(
 
 
   /*
-  =======================================================
-  BATCH 1
-  Key1 + Key2
-  =======================================================
+  =====================================================
+  1 + 2
+  =====================================================
   */
 
   for (
+
     let i = 0;
+
     i < GEMINI_KEYS.length;
+
     i += 2
+
   ) {
 
-    const batch =
-      GEMINI_KEYS.slice(
-        i,
-        i + 2
-      );
+    const batchNumber =
+      Math.floor(i / 2) + 1;
 
 
     console.log(
-      `[NEXUS] Gemini batch ${
-        Math.floor(i / 2) + 1
-      } started`
+
+      `[NEXUS] GEMINI BATCH ` +
+      `${batchNumber} START`
+
     );
 
 
@@ -831,17 +1157,21 @@ async function callGemini(
 
       const result =
         await callGeminiBatch(
-          batch,
+
+          i,
+
           prompt
+
         );
 
 
       if (result) {
 
         console.log(
-          `[NEXUS] Gemini batch ${
-            Math.floor(i / 2) + 1
-          } SUCCESS`
+
+          `[NEXUS] GEMINI BATCH ` +
+          `${batchNumber} SUCCESS`
+
         );
 
 
@@ -852,10 +1182,10 @@ async function callGemini(
     } catch (error) {
 
       console.log(
-        `[NEXUS] Gemini batch ${
-          Math.floor(i / 2) + 1
-        } FAILED:`,
-        error?.message
+
+        `[NEXUS] GEMINI BATCH ` +
+        `${batchNumber} FAILED`
+
       );
 
     }
@@ -871,99 +1201,7 @@ async function callGemini(
 
 
 /* =======================================================
-   FIRST SUCCESS
-======================================================= */
-
-async function firstSuccess(
-  providers
-) {
-
-  /*
-  =======================================================
-  كل المزودات تعمل في نفس الوقت
-  =======================================================
-  */
-
-  const attempts =
-    providers.map(
-      async provider => {
-
-        const start =
-          Date.now();
-
-
-        try {
-
-          const result =
-            await provider.fn();
-
-
-          if (
-            !result ||
-            !result.trim()
-          ) {
-
-            throw new Error(
-              "EMPTY_RESPONSE"
-            );
-
-          }
-
-
-          console.log(
-
-            `[NEXUS] ${provider.name} OK ` +
-            `${Date.now() - start}ms`
-
-          );
-
-
-          return result.trim();
-
-        } catch (error) {
-
-          console.log(
-
-            `[NEXUS] ${provider.name} FAILED ` +
-            `${Date.now() - start}ms ` +
-            `${error?.message || ""}`
-
-          );
-
-
-          throw error;
-
-        }
-
-      }
-    );
-
-
-  /*
-  =======================================================
-  أول نجاح يفوز
-  =======================================================
-  */
-
-  try {
-
-    return await Promise.any(
-      attempts
-    );
-
-  } catch {
-
-    throw new Error(
-      "ALL_PARALLEL_PROVIDERS_FAILED"
-    );
-
-  }
-
-}
-
-
-/* =======================================================
-   TIMEOUT
+   TIMEOUT WRAPPER
 ======================================================= */
 
 async function withTimeout(
@@ -976,15 +1214,18 @@ async function withTimeout(
 
   const timeoutPromise =
     new Promise(
+
       (_, reject) => {
 
         timer =
           setTimeout(
 
             () => reject(
+
               new Error(
                 "STAGE_TIMEOUT"
               )
+
             ),
 
             timeout
@@ -992,6 +1233,7 @@ async function withTimeout(
           );
 
       }
+
     );
 
 
@@ -1023,10 +1265,10 @@ async function runCycle(
 ) {
 
   /*
-  =======================================================
+  =====================================================
   STEP 1
-  GROQ
-  =======================================================
+  GROQ KEY 1 → KEY 2
+  =====================================================
   */
 
   console.log(
@@ -1039,19 +1281,16 @@ async function runCycle(
     const result =
       await withTimeout(
 
-        callGroq(prompt),
+        callGroq(
+          prompt
+        ),
 
-        GROQ_TIMEOUT + 300
+        (GROQ_TIMEOUT * 2) + 500
 
       );
 
 
     if (result) {
-
-      console.log(
-        "[NEXUS] GROQ SUCCESS"
-      );
-
 
       return result;
 
@@ -1060,18 +1299,17 @@ async function runCycle(
   } catch (error) {
 
     console.log(
-      "[NEXUS] GROQ FAILED:",
-      error?.message
+      "[NEXUS] GROQ FAILED"
     );
 
   }
 
 
   /*
-  =======================================================
+  =====================================================
   STEP 2
-  GLM5 + CLAUDE35 + BLACKBOX
-  =======================================================
+  GLM5 + CLAUDE + BLACKBOX
+  =====================================================
   */
 
   console.log(
@@ -1087,26 +1325,43 @@ async function runCycle(
         firstSuccess([
 
           {
-            name: "GLM5",
 
-            fn: () =>
-              callGLM(prompt)
+            name:
+              "GLM5",
 
-          },
-
-          {
-            name: "CLAUDE35",
-
-            fn: () =>
-              callClaude(prompt)
+            fn:
+              () =>
+                callGLM(
+                  prompt
+                )
 
           },
 
-          {
-            name: "BLACKBOX",
 
-            fn: () =>
-              callBlackbox(prompt)
+          {
+
+            name:
+              "CLAUDE35",
+
+            fn:
+              () =>
+                callClaude(
+                  prompt
+                )
+
+          },
+
+
+          {
+
+            name:
+              "BLACKBOX",
+
+            fn:
+              () =>
+                callBlackbox(
+                  prompt
+                )
 
           }
 
@@ -1119,11 +1374,6 @@ async function runCycle(
 
     if (result) {
 
-      console.log(
-        "[NEXUS] SOLO SUCCESS"
-      );
-
-
       return result;
 
     }
@@ -1131,19 +1381,17 @@ async function runCycle(
   } catch (error) {
 
     console.log(
-      "[NEXUS] ALL SOLO FAILED:",
-      error?.message
+      "[NEXUS] ALL SOLO FAILED"
     );
 
   }
 
 
   /*
-  =======================================================
+  =====================================================
   STEP 3
   GEMINI
-  =======================================================
-  */
+  ===================================================== */
 
   console.log(
     "[NEXUS] STEP 3 → GEMINI"
@@ -1155,24 +1403,16 @@ async function runCycle(
     const result =
       await withTimeout(
 
-        callGemini(prompt),
+        callGemini(
+          prompt
+        ),
 
-        /*
-          4 batches × 1800ms
-          + هامش صغير
-        */
-
-        (GEMINI_TIMEOUT * 4) + 800
+        (GEMINI_TIMEOUT * 4) + 1000
 
       );
 
 
     if (result) {
-
-      console.log(
-        "[NEXUS] GEMINI SUCCESS"
-      );
-
 
       return result;
 
@@ -1181,18 +1421,16 @@ async function runCycle(
   } catch (error) {
 
     console.log(
-      "[NEXUS] ALL GEMINI FAILED:",
-      error?.message
+      "[NEXUS] ALL GEMINI FAILED"
     );
 
   }
 
 
   /*
-  =======================================================
+  =====================================================
   CYCLE FAILED
-  =======================================================
-  */
+  ===================================================== */
 
   throw new Error(
     "CYCLE_FAILED"
@@ -1210,9 +1448,13 @@ async function generate(
 ) {
 
   for (
+
     let cycle = 1;
+
     cycle <= MAX_CYCLES;
+
     cycle++
+
   ) {
 
     const start =
@@ -1220,17 +1462,20 @@ async function generate(
 
 
     console.log(
-      `========================================`
+      "======================================"
     );
 
 
     console.log(
-      `[NEXUS] CYCLE ${cycle}/${MAX_CYCLES}`
+
+      `[NEXUS] CYCLE ` +
+      `${cycle}/${MAX_CYCLES}`
+
     );
 
 
     console.log(
-      `========================================`
+      "======================================"
     );
 
 
@@ -1239,7 +1484,9 @@ async function generate(
       const result =
         await withTimeout(
 
-          runCycle(prompt),
+          runCycle(
+            prompt
+          ),
 
           CYCLE_TIMEOUT
 
@@ -1265,8 +1512,7 @@ async function generate(
 
       console.log(
 
-        `[NEXUS] CYCLE ${cycle} FAILED:`,
-        error?.message
+        `[NEXUS] CYCLE ${cycle} FAILED`
 
       );
 
@@ -1275,7 +1521,8 @@ async function generate(
 
     /*
     =====================================================
-    إعادة المحاولة
+    إذا فشلت الدورة:
+    ابدأ دورة جديدة من Groq
     =====================================================
     */
 
@@ -1291,12 +1538,6 @@ async function generate(
 
   }
 
-
-  /*
-  =======================================================
-  كل شيء فشل
-  =======================================================
-  */
 
   throw new Error(
     "ALL_PROVIDERS_FAILED"
@@ -1315,33 +1556,42 @@ export default async function handler(
 ) {
 
   /*
-  =======================================================
+  =====================================================
   CORS
-  =======================================================
+  =====================================================
   */
 
   res.setHeader(
+
     "Access-Control-Allow-Origin",
+
     "*"
+
   );
 
 
   res.setHeader(
+
     "Access-Control-Allow-Methods",
+
     "GET, POST, OPTIONS"
+
   );
 
 
   res.setHeader(
+
     "Access-Control-Allow-Headers",
+
     "Content-Type"
+
   );
 
 
   /*
-  =======================================================
+  =====================================================
   OPTIONS
-  =======================================================
+  =====================================================
   */
 
   if (
@@ -1375,13 +1625,18 @@ export default async function handler(
     ) {
 
       prompt =
+
         req.query?.q ||
+
         req.query?.prompt ||
+
         "";
 
 
       systemPrompt =
+
         req.query?.systemPrompt ||
+
         "";
 
     }
@@ -1402,20 +1657,29 @@ export default async function handler(
 
 
       prompt =
+
         typeof body.prompt === "string"
+
           ? body.prompt.trim()
+
           : "";
 
 
       systemPrompt =
+
         typeof body.systemPrompt === "string"
+
           ? body.systemPrompt
+
           : "";
 
 
       history =
+
         Array.isArray(body.history)
+
           ? body.history
+
           : [];
 
     }
@@ -1423,7 +1687,7 @@ export default async function handler(
 
     /*
     =====================================================
-    METHOD NOT ALLOWED
+    INVALID METHOD
     =====================================================
     */
 
@@ -1433,7 +1697,8 @@ export default async function handler(
         .status(405)
         .json({
 
-          success: false,
+          success:
+            false,
 
           error:
             "Method not allowed"
@@ -1469,7 +1734,8 @@ export default async function handler(
         .status(400)
         .json({
 
-          success: false,
+          success:
+            false,
 
           error:
             "Prompt is required"
@@ -1487,7 +1753,8 @@ export default async function handler(
         .status(413)
         .json({
 
-          success: false,
+          success:
+            false,
 
           error:
             "Prompt is too long"
@@ -1499,7 +1766,7 @@ export default async function handler(
 
     /*
     =====================================================
-    BUILD PROMPT
+    BUILD
     =====================================================
     */
 
@@ -1545,7 +1812,8 @@ export default async function handler(
       .status(200)
       .json({
 
-        success: true,
+        success:
+          true,
 
         reply,
 
@@ -1564,14 +1832,16 @@ export default async function handler(
 
     /*
     =====================================================
-    INTERNAL LOG ONLY
+    INTERNAL LOG
     =====================================================
     */
 
     console.error(
 
       "[AZHRT NEXUS] FINAL FAILURE:",
-      error?.message || error
+
+      error?.message ||
+      error
 
     );
 
@@ -1586,7 +1856,8 @@ export default async function handler(
       .status(503)
       .json({
 
-        success: false,
+        success:
+          false,
 
         engine:
           "AZHRT NEXUS",
